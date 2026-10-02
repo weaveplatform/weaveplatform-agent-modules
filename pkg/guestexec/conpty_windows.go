@@ -11,7 +11,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/foundation"
@@ -80,6 +82,7 @@ func startConPTY(req guestwire.ExecRequest) (Process, error) {
 		in:      os.NewFile(uintptr(inputWrite), "conpty-in"),
 		exited:  make(chan struct{}),
 	}
+	p.lastRead.Store(time.Now().UnixNano())
 	go p.watch()
 	return p, nil
 }
@@ -186,6 +189,10 @@ type conptyProcess struct {
 	out     *os.File
 	in      *os.File
 
+	// lastRead is when output was last read (unix nanos), so the console is
+	// closed only once the final frame has drained.
+	lastRead atomic.Int64
+
 	// exited closes once the child has gone and code/waitErr are final.
 	exited  chan struct{}
 	code    int
@@ -214,7 +221,29 @@ func (p *conptyProcess) watch() {
 		}
 	}
 	close(p.exited)
+	p.settle()
 	p.closeConsole()
+}
+
+// Settling bounds, vars so tests can shorten them.
+var (
+	settleQuiet = 200 * time.Millisecond
+	settleMax   = 2 * time.Second
+)
+
+// settle waits for the output to go quiet before the console is closed. The
+// console renders asynchronously: a child that prints and exits at once has
+// its text still inside conhost when it exits, and closing the console then
+// discards it. A short quiet period after the exit lets the final frame reach
+// the pipe; the cap keeps a reader that has stopped reading from stalling it.
+func (p *conptyProcess) settle() {
+	deadline := time.Now().Add(settleMax)
+	for time.Now().Before(deadline) {
+		if time.Since(time.Unix(0, p.lastRead.Load())) >= settleQuiet {
+			return
+		}
+		time.Sleep(settleQuiet / 8)
+	}
 }
 
 // closeConsole releases the pseudo-console once. Closing it can wait for its
@@ -226,7 +255,7 @@ func (p *conptyProcess) closeConsole() {
 
 // Stdout carries everything: a terminal merges the two streams, as a terminal
 // does, so there is no separate stderr to report.
-func (p *conptyProcess) Stdout() io.Reader     { return p.out }
+func (p *conptyProcess) Stdout() io.Reader     { return conptyReader{p} }
 func (p *conptyProcess) Stderr() io.Reader     { return nil }
 func (p *conptyProcess) Stdin() io.WriteCloser { return p.in }
 func (p *conptyProcess) PID() int              { return p.pid }
@@ -268,6 +297,17 @@ func (p *conptyProcess) Signal(name string) error {
 	default:
 		return fmt.Errorf("%w: %q has no Windows equivalent", errUnsupportedSignal, name)
 	}
+}
+
+// conptyReader stamps each read so settle can tell when output has drained.
+type conptyReader struct{ p *conptyProcess }
+
+func (r conptyReader) Read(b []byte) (int, error) {
+	n, err := r.p.out.Read(b)
+	if n > 0 {
+		r.p.lastRead.Store(time.Now().UnixNano())
+	}
+	return n, err //nolint:wrapcheck // io.Reader contract: io.EOF must pass through unwrapped
 }
 
 // Wait blocks until the process exits and reports its code.
