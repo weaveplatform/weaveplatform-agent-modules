@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/creack/pty v1.1.24
 	github.com/deploymenttheory/go-bindings-win32 v0.5.0
-	github.com/weaveplatform/weaveplatform-agent-core/sdk v0.10.0
+	github.com/weaveplatform/weaveplatform-agent-core/sdk v0.11.0
 )
 
 require (

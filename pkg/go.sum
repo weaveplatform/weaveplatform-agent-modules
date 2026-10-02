@@ -8,8 +8,8 @@ github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek
 github.com/golang/protobuf v1.5.4/go.mod h1:lnTiLA8Wa4RWRcIUkrtSVa5nRhsEGBg48fD6rSs7xps=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
-github.com/weaveplatform/weaveplatform-agent-core/sdk v0.10.0 h1:gy6sYMTwjF1tr4pJqWE20otLWpe5OlL/4/OD96Nsz0I=
-github.com/weaveplatform/weaveplatform-agent-core/sdk v0.10.0/go.mod h1:vyi4PQY8/I3MR32aqs7FHEBhfYGPrL3YW8pC+xa6Qcg=
+github.com/weaveplatform/weaveplatform-agent-core/sdk v0.11.0 h1:f2mF9qfIOB8Cvt9g6TZ3/4FVMAc4uEv3FxQStjszXoc=
+github.com/weaveplatform/weaveplatform-agent-core/sdk v0.11.0/go.mod h1:vyi4PQY8/I3MR32aqs7FHEBhfYGPrL3YW8pC+xa6Qcg=
 golang.org/x/net v0.59.0 h1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=
 golang.org/x/net v0.59.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
