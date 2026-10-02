@@ -69,6 +69,30 @@ linters:
   settings:
     nakedret:
       max-func-lines: 40
+    tagliatelle:
+      case:
+        rules:
+          # The guestweave wire contract and agent-core's hvchannel are
+          # snake_case JSON; changing a tag changes the wire.
+          json: snake
+    wrapcheck:
+      # Errors crossing between this repository's own packages already
+      # carry their package prefix; wrapping them again only stutters.
+      ignore-package-globs:
+        - github.com/weaveplatform/weaveplatform-agent-modules/*
+      # The defaults, plus context errors: ctx.Err() is returned as itself so
+      # callers match it with errors.Is and read it without a prefix.
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - errors.Join(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithMessagef(
+        - .WithStack(
+        - .Err()
 
   # 4) Issue-filtering (not disabling analysis, just silencing reports)
   exclusions:
@@ -125,9 +149,6 @@ linters:
       - "scripts/.*"              # Scripts for development
       - "docs/.*\\.go$"           # Documentation generators
 
-    # Never exclude these critical paths, even if they match patterns above
-    paths-except:
-      - "internal/.*\\.go$"       # Core provider logic
 
 formatters:
   # Only run the formatters you actually want to auto‐fix in CI

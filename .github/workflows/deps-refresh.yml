@@ -3,11 +3,17 @@ name: deps | Refresh
 # Moves everything Dependabot cannot to its latest release, and does it on the
 # day a repository is born rather than at Dependabot's first scheduled run:
 #
-#   - the go directive, to the latest stable Go release;
-#   - every module and every go.mod tool (govulncheck, go-test-coverage),
-#     with go get -u;
+#   - the go directive of go.work and of every module, to the latest stable
+#     Go release;
+#   - every dependency of every module in go.work, and the tools in
+#     tools/go.mod (govulncheck, go-test-coverage), with go get -u;
 #   - the golangci-lint version in .github/golangci-lint-version;
-#   - modules pinned to a branch or query in .github/deps-refresh.pins.
+#   - modules pinned to a branch or query in .github/deps-refresh.pins, in
+#     each module that requires them.
+#
+# Each module is updated on its own (GOWORK=off) so its go.mod names what it
+# needs without the workspace's help, then go work sync brings the workspace
+# back in line.
 #
 # The result goes up as one PR from the org App, so the quality gate runs on
 # it like any other change, and auto-merge.yml merges it when the gate
@@ -73,18 +79,34 @@ jobs:
         run: |
           set -euo pipefail
           latest=$(go env GOVERSION | sed -E 's/^go([0-9]+\.[0-9]+).*/\1/')
-          go mod edit -go="$latest"
-          go get -u ./... tool
-          # Some modules' newest version is not "latest": gVisor, for one,
-          # publishes its Go module on the go branch, and its default branch
-          # does not build as a module. Each line of the optional pins file is
-          # a module@query applied after the general update.
+          pins=()
           if [ -f .github/deps-refresh.pins ]; then
-            grep -v -e '^#' -e '^[[:space:]]*$' .github/deps-refresh.pins | while read -r pin; do
-              go get "$pin"
-            done
+            mapfile -t pins < <(grep -v -e '^#' -e '^[[:space:]]*$' .github/deps-refresh.pins)
           fi
-          go mod tidy
+          GOWORK= go work edit -go="$latest"
+          for m in $(GOWORK= go work edit -json | jq -r '.Use[].DiskPath') ./tools; do
+            echo "== $m"
+            (
+              cd "$m"
+              go mod edit -go="$latest"
+              if [ "$m" = ./tools ]; then
+                go get -u tool
+              else
+                go get -u ./...
+              fi
+              # Some modules' newest version is not "latest": gVisor, for one,
+              # publishes its Go module on the go branch, and its default
+              # branch does not build as a module. Each pin is a module@query
+              # applied after the general update, only where it is required.
+              for pin in "${pins[@]}"; do
+                if go list -m "${pin%@*}" >/dev/null 2>&1; then
+                  go get "$pin"
+                fi
+              done
+              go mod tidy
+            )
+          done
+          GOWORK= go work sync
           gh api repos/golangci/golangci-lint/releases/latest -q .tag_name > .github/golangci-lint-version
           git status --short
 
