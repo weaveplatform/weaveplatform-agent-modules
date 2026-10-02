@@ -205,10 +205,14 @@ jobs:
       # As the module's own OS when it has one: its code is build-tagged to
       # that OS, and on any other there would be nothing to check. Empty means
       # the runner's own.
+      # Built for the runner first: with GOOS set, `go tool` would build
+      # govulncheck itself for the module's OS, which the runner cannot exec.
       - name: govulncheck
         env:
-          GOOS: ${{ matrix.goos }}
-        run: go tool -modfile="$GITHUB_WORKSPACE/tools/go.mod" govulncheck ./...
+          TARGET_GOOS: ${{ matrix.goos }}
+        run: |
+          (cd "$GITHUB_WORKSPACE/tools" && go build -o "$RUNNER_TEMP/govulncheck" golang.org/x/vuln/cmd/govulncheck)
+          GOOS="$TARGET_GOOS" "$RUNNER_TEMP/govulncheck" ./...
 
   build:
     name: 'Cross-compile ${{ matrix.dir }}'

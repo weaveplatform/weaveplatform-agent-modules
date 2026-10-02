@@ -74,9 +74,11 @@ fmt:
 vet-all-os:
 	$(call each_module,for os in $${mos:-linux darwin windows}; do echo "  $$os"; GOOS=$$os $(GO) vet ./... || exit 1; done)
 
-## vuln: govulncheck over every module
+## vuln: govulncheck over every module (built for this machine, run as each module's OS)
+GOVULNCHECK := $(ROOT)/.bin/govulncheck
 vuln:
-	$(call each_module,GOOS=$$mos $(TOOLS) govulncheck ./...)
+	@mkdir -p $(ROOT)/.bin && cd $(ROOT)/tools && GOWORK=off $(GO) build -o $(GOVULNCHECK) golang.org/x/vuln/cmd/govulncheck
+	$(call each_module,GOOS=$$mos GOWORK=off $(GOVULNCHECK) ./...)
 
 ## tidy: go mod tidy every module and sync the workspace
 tidy:
