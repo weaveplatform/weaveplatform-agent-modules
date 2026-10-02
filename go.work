@@ -8,11 +8,14 @@ use (
 	./modules/weave-linux-exec
 	./modules/weave-linux-power
 	./modules/weave-linux-presence
+	./modules/weave-linux-time
 	./modules/weave-macos-exec
 	./modules/weave-macos-power
 	./modules/weave-macos-presence
+	./modules/weave-macos-time
 	./modules/weave-windows-exec
 	./modules/weave-windows-power
 	./modules/weave-windows-presence
+	./modules/weave-windows-time
 	./pkg
 )

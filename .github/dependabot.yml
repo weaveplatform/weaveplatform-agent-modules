@@ -32,6 +32,9 @@ updates:
       - "/modules/weave-linux-power"
       - "/modules/weave-macos-power"
       - "/modules/weave-windows-power"
+      - "/modules/weave-linux-time"
+      - "/modules/weave-macos-time"
+      - "/modules/weave-windows-time"
       - "/tools"
     schedule:
       interval: "daily"
