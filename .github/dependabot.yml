@@ -18,8 +18,12 @@ updates:
       prefix: "chore"
       include: "scope"
 
+  # One entry per Go module. go.work is not a module; list each module that
+  # joins it here as it lands (modules/*, cmd/*).
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/pkg"
+      - "/tools"
     schedule:
       interval: "daily"
     groups:

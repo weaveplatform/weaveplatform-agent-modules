@@ -1,0 +1,7 @@
+// The workspace is committed so a checkout builds every module against the
+// local pkg/ without replace directives. modules/guestweave-<os>-<capability>
+// and cmd/* join the use block as they land. CI also builds every module with
+// GOWORK=off, so a dependency missing from a module's own go.mod still fails.
+go 1.27
+
+use ./pkg
