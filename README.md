@@ -70,7 +70,11 @@ pkg/                       github.com/weaveplatform/weaveplatform-agent-modules/
   weavepresence/ weaveexec/ weavepower/ weavetime/ weavemetrics/
                            OS-neutral capability services; each per-OS module supplies the backend
   weavepolicy/             exec policy and audit records
-modules/                   weave-<os>-<capability>/ (next: presence, exec, power, time, metrics)
+modules/                   one Go module per capability per OS, each built only for its OS
+  weave-linux-presence/    presence for Linux: x/sys/unix, procfs and DMI
+  weave-macos-presence/    presence for macOS (arm64): Foundation and IOKit via go-bindings-macosplatform
+  weave-windows-presence/  presence for Windows: registry, SMBIOS and system info via go-bindings-win32
+                           (next: exec, power, time, metrics)
 tools/                     pinned developer tools (go-test-coverage, govulncheck); not in go.work
 ```
 
@@ -121,6 +125,8 @@ enforces each module's gate.
 ## Releases
 
 release-please runs in manifest mode with one component per module. `pkg` is released as
-`pkg/vX.Y.Z` (starting at 0.1.0), and each capability module will get its own
-`<path>/vX.Y.Z` component as it lands. Commit messages and PR titles follow Conventional
-Commits.
+`pkg/vX.Y.Z`, and each capability module as `modules/weave-<os>-<capability>/vX.Y.Z`
+(both starting at 0.1.0); release-please also bumps the version in the module's
+`module.manifest.json`. A module tag runs `module-release.yml`, which hands the module to
+agent-core's shared publish pipeline: a build for every platform the manifest lists, pushed
+to GHCR under the manifest id. Commit messages and PR titles follow Conventional Commits.

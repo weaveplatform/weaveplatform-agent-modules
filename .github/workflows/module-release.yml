@@ -1,0 +1,78 @@
+name: module-release
+
+# Publishes a capability module when release-please tags it, through
+# agent-core's shared module pipeline: build every platform the module's
+# manifest declares, stamp the sidecar manifest with digests, push to GHCR by
+# manifest id, and ask the channels repository for a promotion PR.
+#
+# release-please tags each module with its component, which is its path:
+# modules/weave-<os>-<capability>/vX.Y.Z. That is also the module's Go tag, so
+# one tag serves both, and the module directory is the tag less its "/v…".
+on:
+  push:
+    tags:
+      - 'modules/weave-*/v*'
+  # Re-publish an existing tag after a pipeline fix without cutting a release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish, e.g. modules/weave-linux-presence/v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  module:
+    name: 'Resolve the module'
+    runs-on: ubuntu-latest
+    outputs:
+      dir: ${{ steps.dir.outputs.dir }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      # The pipeline names the published artifact by the manifest's id and
+      # versions it by the tag, so a tag whose directory, id and manifest
+      # version disagree would publish under the wrong name or version. Refuse
+      # it here rather than in a channel.
+      - name: Module directory from the tag
+        id: dir
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          dir="${TAG%/v*}"
+          version="${TAG##*/v}"
+          case "$dir" in
+            modules/weave-*) ;;
+            *) echo "::error::$TAG is not a capability module tag"; exit 1 ;;
+          esac
+          manifest="$dir/module.manifest.json"
+          [ -f "$manifest" ] || { echo "::error::$dir has no module.manifest.json"; exit 1; }
+          id=$(jq -r .id "$manifest")
+          [ "$id" = "${dir#modules/}" ] || { echo "::error::$manifest id is $id, not ${dir#modules/}"; exit 1; }
+          declared=$(jq -r .version "$manifest")
+          [ "$declared" = "$version" ] || { echo "::error::$manifest version is $declared, the tag is $version"; exit 1; }
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "publishing $id $version from $dir"
+
+  publish:
+    name: 'Publish'
+    needs: [module]
+    permissions:
+      contents: write
+      packages: write
+    uses: weaveplatform/weaveplatform-agent-core/.github/workflows/module-release.yml@main
+    with:
+      module-dir: ${{ needs.module.outputs.dir }}
+      ref: ${{ inputs.tag || '' }}
+    secrets: inherit
