@@ -11,13 +11,13 @@ OS, `weave-<linux|macos|windows>-<capability>`, and any product in the family dr
 hostweave placing jobs on cloud and device capacity, guestweave managing VMs on a device,
 sightweave, appweave, or whatever comes next.
 
-| Where core runs | Driven by | Over |
+| Where core runs | Driven by | Over the host channel |
 |---|---|---|
-| A VM on a device (Virtualization.framework, Hyper-V, QEMU/KVM) | the hypervisor host | the host channel: virtio-serial, vsock or HvSocket |
-| A container on a device or in the cloud | the container host | the host channel: a Unix socket |
-| A VM at a hyperscaler, an enrolled physical device | the platform | GateWeave |
+| A VM, on a device or on a cloud host (Virtualization.framework, Hyper-V, QEMU/KVM) | the hypervisor host: guestweave, or hostweave placing a job | virtio-serial, vsock or HvSocket |
+| A container, on a device or in the cloud | the container runtime's host: hostweave placing a job | a Unix socket |
 
-A capability behaves the same whichever way it is reached; core does the routing.
+Whatever the machine, the host directly outside it drives the capabilities over core's
+one authenticated host channel; core does the routing.
 
 ## Addressing
 

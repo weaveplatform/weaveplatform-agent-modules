@@ -29,10 +29,9 @@ session; power and exec need system.
   that manages an OS — on a device, in a local or hyperscaler VM, in a container — so
   nothing on the wire or in a module id names one product: `weave-<os>-<capability>`,
   `weave.<capability>`, protocol `weave/1`, packages `weave*`.
-- **Reachable however core is.** A capability answers whichever peer core routes to it
-  — the host channel (hypervisor or container host) or GateWeave — and does not require
-  the host channel to launch, so the same module works on a cloud VM with no host
-  directly outside it.
+- **Driven over the host channel.** The host directly outside the machine — a
+  hypervisor for a VM, a container runtime for a container — drives every capability
+  over core's host channel, so a module requires that channel to launch.
 - **`weave.presence.hello` is pre-auth.** agent-core allows exactly this kind through
   before the host authenticates (`hvchannel.PreAuthKind`), so the two must agree.
 

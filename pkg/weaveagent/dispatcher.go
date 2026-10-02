@@ -160,7 +160,6 @@ func (d *Dispatcher) Run(ctx context.Context, in <-chan modulesdk.Message) {
 const orderedQueueDepth = 64
 
 func (d *Dispatcher) dispatch(ctx context.Context, msg modulesdk.Message) {
-	ctx = WithPeer(ctx, msg.Peer)
 	var cmd weavewire.Command
 	if err := json.Unmarshal(msg.Data, &cmd); err != nil {
 		d.log.Warn("weave: undecodable command", "kind", msg.Kind, "err", err)
@@ -207,7 +206,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, msg modulesdk.Message) {
 		return
 	}
 	reply := modulesdk.Message{
-		Peer: PeerFrom(ctx),
+		Peer: modulesdk.PeerHypervisor,
 		Kind: weavewire.ResultKind(msg.Kind),
 		Data: data,
 	}

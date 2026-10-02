@@ -3,13 +3,12 @@
 //
 // # Posture
 //
-// A request reaches exec from one of two authenticated peers: the host channel
-// — a hypervisor or container host directly outside the machine, which proved
-// the machine's channel key — or GateWeave, the platform the machine is
-// enrolled with, over core's enrolled identity. Either asker already controls
-// the machine outright (it can power it off, or reimage it), so exec is not an
-// open surface and exec policy is defence in depth, not the primary control.
-// That shapes the default:
+// A request reaches exec only over core's host channel, from the host directly
+// outside the machine — a hypervisor for a VM, a container runtime for a
+// container — and only after that host has proved the machine's channel key.
+// The asker already controls the machine outright (it can power it off, or
+// discard it), so exec is not an open surface and exec policy is defence in
+// depth, not the primary control. That shapes the default:
 //
 //   - No policy document means ALLOW, audited. A machine with no policy server
 //     must still be driveable by whoever controls it; failing closed here would
@@ -183,14 +182,12 @@ const AuditTopic = "exec.audit"
 // exactly the executions that mattered — the one that hung, the one that took
 // the guest down, the one still running when the channel dropped.
 type ExecAudit struct {
-	At     time.Time `json:"at"`
-	ExecID string    `json:"exec_id"`
-	Argv   []string  `json:"argv"`
-	Dir    string    `json:"dir,omitempty"`
-	TTY    bool      `json:"tty,omitempty"`
-	// Peer is who asked: "host" (the host channel) or "platform" (GateWeave).
-	Peer     string `json:"peer,omitempty"`
-	Refused  string `json:"refused,omitempty"`
-	Policy   bool   `json:"policy_present"`
-	ExitCode *int   `json:"exit_code,omitempty"`
+	At       time.Time `json:"at"`
+	ExecID   string    `json:"exec_id"`
+	Argv     []string  `json:"argv"`
+	Dir      string    `json:"dir,omitempty"`
+	TTY      bool      `json:"tty,omitempty"`
+	Refused  string    `json:"refused,omitempty"`
+	Policy   bool      `json:"policy_present"`
+	ExitCode *int      `json:"exit_code,omitempty"`
 }

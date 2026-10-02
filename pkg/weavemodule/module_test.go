@@ -73,7 +73,7 @@ func TestModuleIdentity(t *testing.T) {
 	if m.Address() != "weave.exec" {
 		t.Fatalf("address = %q", m.Address())
 	}
-	if m.Requires() != nil {
+	if !slices.Equal(m.Requires(), []modulesdk.Capability{"hypervisor.channel"}) {
 		t.Fatalf("requires = %v", m.Requires())
 	}
 }

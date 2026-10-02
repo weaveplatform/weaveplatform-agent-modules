@@ -54,7 +54,7 @@ func (e *emitter) Emit(ctx context.Context, kind string, payload any) error {
 		return err
 	}
 	if _, err := e.send.Send(ctx, modulesdk.Message{
-		Peer: PeerFrom(ctx), Kind: kind, Data: data,
+		Peer: modulesdk.PeerHypervisor, Kind: kind, Data: data,
 	}, false); err != nil {
 		return fmt.Errorf("weaveagent: emitting %s: %w", kind, err)
 	}

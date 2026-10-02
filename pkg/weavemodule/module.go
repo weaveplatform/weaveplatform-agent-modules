@@ -83,11 +83,13 @@ func (m *Module) ID() string { return m.id }
 // declare the same value, or core routes the host's commands elsewhere.
 func (m *Module) Address() string { return m.svc.Capability().Address() }
 
-// Requires implements modulesdk.Module. Nothing: a capability is reachable
-// however core is — over the host channel when there is a hypervisor or
-// container host directly outside the machine, over GateWeave on a cloud VM or
-// an enrolled device — so it must run without the host channel too.
-func (m *Module) Requires() []modulesdk.Capability { return nil }
+// Requires implements modulesdk.Module. A capability is driven by the host
+// directly outside the machine — a hypervisor for a VM, a container runtime for
+// a container — over core's host channel, so core never launches one on a
+// machine without that channel.
+func (m *Module) Requires() []modulesdk.Capability {
+	return []modulesdk.Capability{"hypervisor.channel"}
+}
 
 // Init wires the dispatcher and lets the service register its handlers.
 //

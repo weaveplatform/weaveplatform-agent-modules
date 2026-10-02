@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/weaveplatform/weaveplatform-agent-core/sdk/modulesdk"
-	"github.com/weaveplatform/weaveplatform-agent-modules/pkg/weaveagent"
 	"github.com/weaveplatform/weaveplatform-agent-modules/pkg/weavemodule"
 	"github.com/weaveplatform/weaveplatform-agent-modules/pkg/weavepolicy"
 	"github.com/weaveplatform/weaveplatform-agent-modules/pkg/weavewire"
@@ -132,7 +131,7 @@ func (g *policyGuard) Authorise(
 		// door, which is the one failure mode a policy must not have.
 		g.audit(ctx, weavepolicy.ExecAudit{
 			At: time.Now().UTC(), ExecID: execID, Argv: req.Argv, Dir: req.Dir,
-			TTY: req.TTY, Peer: peerName(ctx), Refused: err.Error(), Policy: true,
+			TTY: req.TTY, Refused: err.Error(), Policy: true,
 		})
 		return Limits{}, err
 	}
@@ -143,7 +142,7 @@ func (g *policyGuard) Authorise(
 	)
 	record := weavepolicy.ExecAudit{
 		At: time.Now().UTC(), ExecID: execID, Argv: req.Argv, Dir: req.Dir,
-		TTY: req.TTY, Peer: peerName(ctx), Policy: present,
+		TTY: req.TTY, Policy: present,
 	}
 	if decision != nil {
 		record.Refused = decision.Error()
@@ -199,12 +198,4 @@ func (g *policyGuard) audit(ctx context.Context, record weavepolicy.ExecAudit) {
 		// look like a broken guest.
 		g.log.Warn("weave: exec audit not published", "err", err)
 	}
-}
-
-// peerName names the asking peer for the audit record.
-func peerName(ctx context.Context) string {
-	if weaveagent.PeerFrom(ctx) == modulesdk.PeerGateWeave {
-		return "platform"
-	}
-	return "host"
 }
