@@ -7,5 +7,6 @@ go 1.27
 use (
 	./modules/weave-linux-presence
 	./modules/weave-macos-presence
+	./modules/weave-windows-presence
 	./pkg
 )
