@@ -24,6 +24,7 @@ updates:
     directories:
       - "/pkg"
       - "/modules/weave-linux-presence"
+      - "/modules/weave-macos-presence"
       - "/tools"
     schedule:
       interval: "daily"
