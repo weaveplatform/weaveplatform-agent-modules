@@ -1,6 +1,6 @@
 {
   "pkg": "0.1.1",
-  "modules/weave-linux-presence": "0.0.0",
-  "modules/weave-macos-presence": "0.0.0",
-  "modules/weave-windows-presence": "0.0.0"
+  "modules/weave-linux-presence": "0.1.0",
+  "modules/weave-macos-presence": "0.1.0",
+  "modules/weave-windows-presence": "0.1.0"
 }
