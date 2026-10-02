@@ -72,7 +72,7 @@ linters:
     tagliatelle:
       case:
         rules:
-          # The guestweave wire contract and agent-core's hvchannel are
+          # The weave wire contract and agent-core's hvchannel are
           # snake_case JSON; changing a tag changes the wire.
           json: snake
     wrapcheck:

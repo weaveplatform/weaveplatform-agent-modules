@@ -19,7 +19,7 @@ multi-module specifics of this repository noted.
   SHA with the version in a comment; Dependabot keeps them current.
 - **Linting.** golangci-lint with `.golangci.yml` is the only linter, and it blocks.
 - **Workspace.** This repository is a Go workspace: `go.work` is committed and lists
-  every module (`pkg/`, `modules/guestweave-<os>-<capability>/`, `cmd/*`). A new
+  every module (`pkg/`, `modules/weave-<os>-<capability>/`, `cmd/*`). A new
   module joins `go.work`, `release-please-config.json` and `.github/dependabot.yml`
   in the PR that adds it; CI fails a `go.mod` missing from `go.work`. CI also
   builds and tests every module with `GOWORK=off`, so the workspace never hides
@@ -28,7 +28,7 @@ multi-module specifics of this repository noted.
   one profile per OS it runs on (`cover-<linux|macos|windows>.out`). Its
   exclusions are relative to the module root.
 - **Capabilities.** One module per capability per OS. The channel address is
-  `guestweave.<capability>`, and the wire contract lives only in `pkg/guestwire`.
+  `weave.<capability>`, and the wire contract lives only in `pkg/weavewire`.
   See `docs/decisions/0001-capability-modules-per-os.md`.
 - **Commits and PR titles** follow Conventional Commits; release-please derives
   versions and the changelog from them.
