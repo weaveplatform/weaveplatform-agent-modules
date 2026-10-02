@@ -4,4 +4,7 @@
 // GOWORK=off, so a dependency missing from a module's own go.mod still fails.
 go 1.27
 
-use ./pkg
+use (
+	./modules/weave-linux-presence
+	./pkg
+)

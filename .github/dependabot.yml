@@ -23,6 +23,7 @@ updates:
   - package-ecosystem: "gomod"
     directories:
       - "/pkg"
+      - "/modules/weave-linux-presence"
       - "/tools"
     schedule:
       interval: "daily"
