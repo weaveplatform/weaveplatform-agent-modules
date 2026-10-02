@@ -29,7 +29,10 @@ multi-module specifics of this repository noted.
   exclusions are relative to the module root.
 - **Capabilities.** One module per capability per OS. The channel address is
   `weave.<capability>`, and the wire contract lives only in `pkg/weavewire`.
-  See `docs/decisions/0001-capability-modules-per-os.md`.
+  See `docs/decisions/0001-capability-modules-per-os.md`. Every file in a
+  capability module except `doc.go` carries its OS's build tag, so the module
+  builds only for that OS; CI tests, lints and vets it there alone and
+  cross-compiles it for the platforms its `module.manifest.json` lists.
 - **Commits and PR titles** follow Conventional Commits; release-please derives
   versions and the changelog from them.
 

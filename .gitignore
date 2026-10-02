@@ -1,5 +1,7 @@
 # Binaries
 /bin/
+# what `go build ./...` leaves in a capability module's directory
+/modules/*/weave-*
 *.exe
 *.exe~
 *.dll
