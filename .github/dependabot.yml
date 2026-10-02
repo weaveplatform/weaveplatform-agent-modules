@@ -26,6 +26,9 @@ updates:
       - "/modules/weave-linux-presence"
       - "/modules/weave-macos-presence"
       - "/modules/weave-windows-presence"
+      - "/modules/weave-linux-exec"
+      - "/modules/weave-macos-exec"
+      - "/modules/weave-windows-exec"
       - "/tools"
     schedule:
       interval: "daily"

@@ -5,8 +5,11 @@
 go 1.27
 
 use (
+	./modules/weave-linux-exec
 	./modules/weave-linux-presence
+	./modules/weave-macos-exec
 	./modules/weave-macos-presence
+	./modules/weave-windows-exec
 	./modules/weave-windows-presence
 	./pkg
 )
