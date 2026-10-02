@@ -102,6 +102,11 @@ func spawnAttached(
 
 	startup := threading.STARTUPINFOEXW{LpAttributeList: attributes}
 	startup.StartupInfo.Cb = uint32(unsafe.Sizeof(startup))
+	// Null standard handles, declared. Without STARTF_USESTDHANDLES a child
+	// whose parent's standard handles are redirected (a service, a CI runner)
+	// is handed those instead of the pseudo-console, and its output never
+	// reaches the terminal it was given.
+	startup.StartupInfo.DwFlags = threading.STARTF_USESTDHANDLES
 
 	commandLine, err := syscall.UTF16PtrFromString(commandLineOf(req.Argv))
 	if err != nil {
@@ -221,29 +226,8 @@ func (p *conptyProcess) watch() {
 		}
 	}
 	close(p.exited)
-	p.settle()
+	settle(&p.lastRead)
 	p.closeConsole()
-}
-
-// Settling bounds, vars so tests can shorten them.
-var (
-	settleQuiet = 200 * time.Millisecond
-	settleMax   = 2 * time.Second
-)
-
-// settle waits for the output to go quiet before the console is closed. The
-// console renders asynchronously: a child that prints and exits at once has
-// its text still inside conhost when it exits, and closing the console then
-// discards it. A short quiet period after the exit lets the final frame reach
-// the pipe; the cap keeps a reader that has stopped reading from stalling it.
-func (p *conptyProcess) settle() {
-	deadline := time.Now().Add(settleMax)
-	for time.Now().Before(deadline) {
-		if time.Since(time.Unix(0, p.lastRead.Load())) >= settleQuiet {
-			return
-		}
-		time.Sleep(settleQuiet / 8)
-	}
 }
 
 // closeConsole releases the pseudo-console once. Closing it can wait for its
@@ -255,7 +239,7 @@ func (p *conptyProcess) closeConsole() {
 
 // Stdout carries everything: a terminal merges the two streams, as a terminal
 // does, so there is no separate stderr to report.
-func (p *conptyProcess) Stdout() io.Reader     { return conptyReader{p} }
+func (p *conptyProcess) Stdout() io.Reader     { return stampedReader{r: p.out, last: &p.lastRead} }
 func (p *conptyProcess) Stderr() io.Reader     { return nil }
 func (p *conptyProcess) Stdin() io.WriteCloser { return p.in }
 func (p *conptyProcess) PID() int              { return p.pid }
@@ -297,17 +281,6 @@ func (p *conptyProcess) Signal(name string) error {
 	default:
 		return fmt.Errorf("%w: %q has no Windows equivalent", errUnsupportedSignal, name)
 	}
-}
-
-// conptyReader stamps each read so settle can tell when output has drained.
-type conptyReader struct{ p *conptyProcess }
-
-func (r conptyReader) Read(b []byte) (int, error) {
-	n, err := r.p.out.Read(b)
-	if n > 0 {
-		r.p.lastRead.Store(time.Now().UnixNano())
-	}
-	return n, err //nolint:wrapcheck // io.Reader contract: io.EOF must pass through unwrapped
 }
 
 // Wait blocks until the process exits and reports its code.
