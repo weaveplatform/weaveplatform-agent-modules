@@ -35,6 +35,9 @@ updates:
       - "/modules/weave-linux-time"
       - "/modules/weave-macos-time"
       - "/modules/weave-windows-time"
+      - "/modules/weave-linux-metrics"
+      - "/modules/weave-macos-metrics"
+      - "/modules/weave-windows-metrics"
       - "/tools"
     schedule:
       interval: "daily"
