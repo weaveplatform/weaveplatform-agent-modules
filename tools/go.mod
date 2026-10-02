@@ -1,4 +1,7 @@
-module github.com/weaveplatform/weaveplatform-template
+// Module tools pins the developer tools the Makefile and CI run with
+// `go tool -modfile=tools/go.mod`, so deps-refresh keeps them at latest like
+// any other dependency. It is not in go.work and holds no code.
+module github.com/weaveplatform/weaveplatform-agent-modules/tools
 
 go 1.27
 
