@@ -7,7 +7,7 @@ name: go | Quality gate
 # gate (each module's .testcoverage.yml over its merged per-OS profiles). The
 # `gate` job is the single required status check.
 #
-# A module under modules/guestweave-<os>-<capability> runs on its own OS's
+# A module under modules/weave-<os>-<capability> runs on its own OS's
 # runner only; every other module (pkg/) runs on all three.
 
 on:
@@ -62,7 +62,7 @@ jobs:
           fi
           modules=$(printf '%s\n' "$mods" | jq -R . | jq -sc '{include: map({dir: ., slug: gsub("/"; "-")})}')
           units=$(printf '%s\n' "$mods" | jq -R . | jq -sc '{include: [.[] as $d
-            | (($d | capture("^modules/guestweave-(?<os>linux|macos|windows)-")? | .os) // null) as $only
+            | (($d | capture("^modules/weave-(?<os>linux|macos|windows)-")? | .os) // null) as $only
             | {linux: "ubuntu-latest", macos: "macos-latest", windows: "windows-latest"} | to_entries[]
             | select($only == null or .key == $only)
             | {dir: $d, slug: ($d | gsub("/"; "-")), os: .key, runner: .value}]}')
