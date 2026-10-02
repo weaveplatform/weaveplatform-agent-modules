@@ -175,7 +175,11 @@ func (c *Client) routeControl(env hvchannel.Envelope) {
 			// The waiter is alive but behind. Dropping is right: it is waiting
 			// for one specific frame, and a full buffer means the guest is
 			// sending control frames faster than a handshake consumes them.
-			c.log.Warn("weaveclient: control frame dropped, handshake buffer full", "kind", env.Kind)
+			c.log.Warn(
+				"weaveclient: control frame dropped, handshake buffer full",
+				"kind",
+				env.Kind,
+			)
 			return
 		}
 	}
