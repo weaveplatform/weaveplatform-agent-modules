@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/pkg/v0.1.0...pkg/v0.1.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **deps:** agent-core sdk 0.12.0 and grpc 1.83.2 (GO-2026-6443) ([2bae969](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/2bae9698111afbf28d8a14f207258dd985091572))
+* **deps:** sdk 0.12.0 and grpc 1.83.2; per-OS module CI ([a1600ae](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/a1600ae9bdae20c8a9ef38dcc12acff619ebeb8c))
+
 ## 0.1.0 (2026-10-02)
 
 
