@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 
@@ -58,12 +60,47 @@ func startTTY(cmd *exec.Cmd, req guestwire.ExecRequest) (Process, error) {
 		// that look like guestweave bugs. 80x24 is the conventional default.
 		size.Cols, size.Rows = 80, 24
 	}
-	ptmx, err := pty.StartWithSize(cmd, size)
+	ptmx, tty, err := pty.Open()
 	if err != nil {
+		return nil, fmt.Errorf("guestexec: opening a terminal: %w", err)
+	}
+	if err := pty.Setsize(ptmx, size); err != nil {
+		closeAll(ptmx, tty)
+		return nil, fmt.Errorf("guestexec: sizing the terminal: %w", err)
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	if err := cmd.Start(); err != nil {
+		closeAll(ptmx, tty)
 		return nil, fmt.Errorf("guestexec: starting under a terminal: %w", err)
 	}
 	// One stream: a terminal merges stdout and stderr, as a terminal does.
-	return &unixProcess{cmd: cmd, ptmx: ptmx, out: ptmx, in: ptmx}, nil
+	p := &unixProcess{cmd: cmd, ptmx: ptmx, in: ptmx, waited: make(chan struct{})}
+	p.out = stampedReader{r: ptmx, last: &p.lastRead}
+	p.lastRead.Store(time.Now().UnixNano())
+	go p.reapTTY(tty)
+	return p, nil
+}
+
+// reapTTY waits for the child, then releases our copy of the terminal's child
+// side once its output has drained.
+//
+// Our copy is held open on purpose. On macOS, the last close of a terminal's
+// child side throws away output nobody has read yet, so a command that prints
+// and exits at once — tty(1), echo — would otherwise lose everything it wrote.
+// Holding it keeps the output; closing it after the drain is what ends the
+// stream, as the child's exit alone would have.
+func (p *unixProcess) reapTTY(tty *os.File) {
+	p.waitErr = p.cmd.Wait()
+	close(p.waited)
+	settle(&p.lastRead)
+	tty.Close() //nolint:errcheck,gosec // nothing useful to do about a failed close of our copy
+}
+
+func closeAll(files ...*os.File) {
+	for _, f := range files {
+		f.Close() //nolint:errcheck,gosec // cleanup after a failure already being reported
+	}
 }
 
 // startPipes runs the process with plain pipes and separate stdout/stderr.
@@ -115,6 +152,13 @@ type unixProcess struct {
 	// it on its first run against this package.
 	mu     sync.Mutex
 	closed bool
+
+	// Terminal mode only: the child is reaped by reapTTY, which must call
+	// cmd.Wait itself so it can release the terminal on exit; Wait reports
+	// what it recorded. waited is nil in pipe mode.
+	waited   chan struct{}
+	waitErr  error
+	lastRead atomic.Int64
 }
 
 func (p *unixProcess) Stdout() io.Reader     { return p.out }
@@ -160,7 +204,13 @@ func (p *unixProcess) Signal(name string) error {
 }
 
 func (p *unixProcess) Wait() (int, string, error) {
-	err := p.cmd.Wait()
+	var err error
+	if p.waited != nil {
+		<-p.waited
+		err = p.waitErr
+	} else {
+		err = p.cmd.Wait()
+	}
 	if err == nil {
 		return 0, "", nil
 	}
