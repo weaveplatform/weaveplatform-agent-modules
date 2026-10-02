@@ -6,10 +6,13 @@ go 1.27
 
 use (
 	./modules/weave-linux-exec
+	./modules/weave-linux-power
 	./modules/weave-linux-presence
 	./modules/weave-macos-exec
+	./modules/weave-macos-power
 	./modules/weave-macos-presence
 	./modules/weave-windows-exec
+	./modules/weave-windows-power
 	./modules/weave-windows-presence
 	./pkg
 )

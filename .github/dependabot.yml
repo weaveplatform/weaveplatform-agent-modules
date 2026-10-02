@@ -29,6 +29,9 @@ updates:
       - "/modules/weave-linux-exec"
       - "/modules/weave-macos-exec"
       - "/modules/weave-windows-exec"
+      - "/modules/weave-linux-power"
+      - "/modules/weave-macos-power"
+      - "/modules/weave-windows-power"
       - "/tools"
     schedule:
       interval: "daily"
