@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.2](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/pkg/v0.1.1...pkg/v0.1.2) (2026-10-03)
+
+
+### Features
+
+* **pkg:** clipboard, session and display contracts and services ([2223c10](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/2223c1090549382236476115cf14f90e7fe92164))
+* **pkg:** clipboard, session and display services ([8990572](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/899057237345111d3221747cab7fc49b2ba2b232))
+* **weaveclient:** clipboard, session and display calls ([58d04a6](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/58d04a6c5a6336e13733cab6f3fa31708e1f2ff3))
+* **weavemodule:** service start hook and session placement check ([09c4fdd](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/09c4fdd53368a255d903572bce24d5855e55c763))
+* **weavewire:** clipboard, session and display contracts ([2542445](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/2542445e0425514020e2e1b275a54ddba2674bf0))
+
 ## [0.1.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/pkg/v0.1.0...pkg/v0.1.1) (2026-10-02)
 
 
