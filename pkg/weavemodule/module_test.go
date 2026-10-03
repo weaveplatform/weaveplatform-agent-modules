@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/weaveplatform/weaveplatform-agent-core/sdk/modulesdk"
 	"github.com/weaveplatform/weaveplatform-agent-modules/pkg/weaveagent"
@@ -277,5 +278,48 @@ func TestRegistrarEmitterSendsEvents(t *testing.T) {
 	var body map[string]int
 	if err := json.Unmarshal(sent[0].Data, &body); err != nil || body["s"] != 3 {
 		t.Fatalf("event body = %s (%v)", sent[0].Data, err)
+	}
+}
+
+type startingService struct {
+	*echoService
+	started chan context.Context
+	err     error
+}
+
+func (s startingService) Start(ctx context.Context) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.started <- ctx
+	return nil
+}
+
+// A service's own work starts with the module and ends when it stops.
+func TestStartRunsTheServicesOwnWorkUntilStop(t *testing.T) {
+	svc := startingService{echoService: timeService(), started: make(chan context.Context, 1)}
+	h := weavemoduletest.Start(t, svc)
+	ctx := <-svc.started
+	if ctx.Err() != nil {
+		t.Fatal("the service's context ended at start")
+	}
+	if err := h.Module.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the service's context outlived the module")
+	}
+}
+
+func TestStartReportsAServiceThatCannotStart(t *testing.T) {
+	svc := startingService{echoService: timeService(), err: errors.New("no watcher")}
+	m := weavemodule.New("weave-test-time", svc)
+	if err := m.Init(context.Background(), weavemoduletest.NewHost(weavemoduletest.NewTransport())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "no watcher") {
+		t.Fatalf("err = %v", err)
 	}
 }
