@@ -1,0 +1,231 @@
+name: module-release
+
+# Publishes a capability module when release-please tags it:
+#
+#   1. resolve the module directory from the tag and refuse a tag whose
+#      directory, manifest id and manifest version disagree;
+#   2. build every platform module.manifest.json declares (the manifest is the
+#      only list, so the build cannot drift from it);
+#   3. stamp a sidecar copy of the manifest with each artifact's digest and
+#      size, and push the binaries and the sidecar to GHCR with ORAS as
+#      ghcr.io/<owner>/weaveplatform-modules/<id>:<version>;
+#   4. attach the same files to the module's GitHub release;
+#   5. ask weaveplatform-channels for a promotion PR (module-published).
+#
+# release-please tags each module with its component, which is its path:
+# modules/weave-<os>-<capability>/vX.Y.Z. That is also the module's Go tag, so
+# one tag serves both, and the module directory is the tag less its "/v…".
+#
+# The published layout is a contract with weaveplatform-channels: its
+# promote.yml pulls <id>:<version>, reads module.manifest.json from it, and
+# records each artifact as <ref>#<os>-<arch> with the stamped digest and size.
+# Binaries are named <id>-<goos>-<goarch>[.exe]; the sidecar is the module's own
+# manifest with .version and .artifacts[{os, arch, digest, size}] set.
+on:
+  push:
+    tags:
+      - 'modules/weave-*/v*'
+  # Re-publish an existing tag after a pipeline fix without cutting a release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish, e.g. modules/weave-linux-presence/v0.2.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: module-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  module:
+    name: 'Resolve the module'
+    runs-on: ubuntu-latest
+    outputs:
+      dir: ${{ steps.resolve.outputs.dir }}
+      id: ${{ steps.resolve.outputs.id }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      # The artifact is named by the manifest id and versioned by the tag, so a
+      # tag whose directory, id and manifest version disagree would publish
+      # under the wrong name or version. Refuse it here rather than in a
+      # channel.
+      - name: Module directory from the tag
+        id: resolve
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          dir="${TAG%/v*}"
+          version="${TAG##*/v}"
+          case "$dir" in
+            modules/weave-*) ;;
+            *) echo "::error::$TAG is not a capability module tag"; exit 1 ;;
+          esac
+          printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' \
+            || { echo "::error::$TAG does not carry a semantic version"; exit 1; }
+          manifest="$dir/module.manifest.json"
+          [ -f "$manifest" ] || { echo "::error::$dir has no module.manifest.json"; exit 1; }
+          id=$(jq -r .id "$manifest")
+          [ "$id" = "${dir#modules/}" ] || { echo "::error::$manifest id is $id, not ${dir#modules/}"; exit 1; }
+          declared=$(jq -r .version "$manifest")
+          [ "$declared" = "$version" ] || { echo "::error::$manifest version is $declared, the tag is $version"; exit 1; }
+          {
+            echo "dir=$dir"
+            echo "id=$id"
+            echo "version=$version"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+          echo "publishing $id $version from $dir"
+
+  publish:
+    name: 'Publish ${{ needs.module.outputs.id }} ${{ needs.module.outputs.version }}'
+    needs: [module]
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+      packages: write
+    env:
+      DIR: ${{ needs.module.outputs.dir }}
+      ID: ${{ needs.module.outputs.id }}
+      VERSION: ${{ needs.module.outputs.version }}
+      TAG: ${{ needs.module.outputs.tag }}
+      CHANNELS_REPO: weaveplatform-channels
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.module.outputs.tag }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ needs.module.outputs.dir }}/go.mod
+          cache-dependency-path: ${{ needs.module.outputs.dir }}/go.sum
+
+      # GOWORK=off: the module as a consumer builds it, from its own go.mod
+      # (the sdk arrives through its replace to ../../sdk at the same commit).
+      - name: Build every platform the manifest declares
+        working-directory: ${{ needs.module.outputs.dir }}
+        env:
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dist"
+          for pair in $(jq -r '.platforms[] | "\(.os)/\(.arch)"' module.manifest.json); do
+            os="${pair%%/*}"
+            arch="${pair##*/}"
+            ext=""
+            [ "$os" = windows ] && ext=".exe"
+            echo "== $os/$arch"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -o "$RUNNER_TEMP/dist/${ID}-${os}-${arch}${ext}" .
+          done
+          ls -la "$RUNNER_TEMP/dist"
+
+      - name: Stamp the sidecar manifest
+        working-directory: ${{ needs.module.outputs.dir }}
+        run: |
+          set -euo pipefail
+          arts="[]"
+          for f in "$RUNNER_TEMP"/dist/*; do
+            base=$(basename "$f")
+            os=$(echo "$base" | sed -E "s/^${ID}-([a-z]+)-.*/\1/")
+            arch=$(echo "$base" | sed -E "s/^${ID}-[a-z]+-([a-z0-9]+)(\.exe)?$/\1/")
+            digest="sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+            size=$(stat -c%s "$f")
+            arts=$(echo "$arts" | jq --arg os "$os" --arg arch "$arch" --arg d "$digest" --argjson s "$size" \
+              '. + [{os: $os, arch: $arch, digest: $d, size: $s}]')
+          done
+          jq --arg v "$VERSION" --argjson arts "$arts" '.version = $v | .artifacts = $arts' \
+            module.manifest.json > "$RUNNER_TEMP/dist/module.manifest.json"
+          cat "$RUNNER_TEMP/dist/module.manifest.json"
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+
+      # GHCR ties a package to the repository that first pushed it, and
+      # GITHUB_TOKEN from any other repository gets 403 on the blob push until
+      # the package grants this repository Write (Package settings → Manage
+      # Actions access). A PAT with write:packages is org-scoped and is
+      # preferred when one is set.
+      - name: Publish to GHCR
+        env:
+          REGISTRY_TOKEN: ${{ secrets.RELEASE_PLEASE_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          cd "$RUNNER_TEMP/dist"
+          oras push "ghcr.io/${GITHUB_REPOSITORY_OWNER}/weaveplatform-modules/${ID}:${VERSION}" \
+            --artifact-type application/vnd.weave.module \
+            ./*
+
+      # release-please creates the release when its PR merges, and this adds
+      # the artifacts to it. A hand-cut tag has no release, so one is created
+      # rather than the artifacts lost.
+      - name: Attach the artifacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::no release for $TAG; creating one for the artifacts"
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --generate-notes
+          fi
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$RUNNER_TEMP"/dist/*
+
+      # The dispatch needs write access to the channels repository, which this
+      # repository's GITHUB_TOKEN never has. The org release-please App mints a
+      # token scoped to that one repository; RELEASE_PLEASE_PAT is the
+      # fallback where the App is unavailable.
+      - name: Mint a channels token
+        id: channels-token
+        if: ${{ vars.RP_APP_ID != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RP_APP_ID }}
+          private-key: ${{ secrets.RP_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.CHANNELS_REPO }}
+
+      # A module published but never offered for promotion is invisible to
+      # every device, so a failed dispatch fails the job. Re-run it with
+      # workflow_dispatch once the credential is fixed: the push is idempotent.
+      - name: Request channel promotion
+        env:
+          GH_TOKEN: ${{ steps.channels-token.outputs.token || secrets.RELEASE_PLEASE_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::no channels credential: the App token could not be minted and RELEASE_PLEASE_PAT is unset"
+            exit 1
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY_OWNER}/${CHANNELS_REPO}/dispatches" \
+            -f event_type=module-published \
+            -f "client_payload[module]=${ID}" \
+            -f "client_payload[version]=${VERSION}"; then
+            echo "::error::module-published dispatch to ${CHANNELS_REPO} failed for ${ID} ${VERSION}"
+            exit 1
+          fi
+          echo "requested promotion of ${ID} ${VERSION}"

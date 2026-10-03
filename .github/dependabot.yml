@@ -18,11 +18,53 @@ updates:
       prefix: "chore"
       include: "scope"
 
+  # One entry per Go module: go.work is not a module. A module that joins
+  # go.work joins this list in the same PR.
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/sdk"
+      - "/modules/weave-linux-clipboard"
+      - "/modules/weave-linux-display"
+      - "/modules/weave-linux-exec"
+      - "/modules/weave-linux-metrics"
+      - "/modules/weave-linux-power"
+      - "/modules/weave-linux-presence"
+      - "/modules/weave-linux-session"
+      - "/modules/weave-linux-time"
+      - "/modules/weave-macos-clipboard"
+      - "/modules/weave-macos-display"
+      - "/modules/weave-macos-exec"
+      - "/modules/weave-macos-metrics"
+      - "/modules/weave-macos-power"
+      - "/modules/weave-macos-presence"
+      - "/modules/weave-macos-session"
+      - "/modules/weave-macos-time"
+      - "/modules/weave-windows-clipboard"
+      - "/modules/weave-windows-display"
+      - "/modules/weave-windows-exec"
+      - "/modules/weave-windows-metrics"
+      - "/modules/weave-windows-power"
+      - "/modules/weave-windows-presence"
+      - "/modules/weave-windows-session"
+      - "/modules/weave-windows-time"
+      - "/packaging/moduledeb"
+      - "/tools"
     schedule:
       interval: "daily"
+    # gRPC 1.84.0 carries GO-2026-6443 (server panic on a missing
+    # :authority/Host) and no 1.84 release fixes it; stay on 1.83.2 until a
+    # fixed release exists, then drop this and the deps-refresh pin.
+    ignore:
+      - dependency-name: "google.golang.org/grpc"
+        versions: ["1.84.x"]
     groups:
+      # Every module requires the sdk and resolves it to ../../sdk by replace,
+      # so a released sdk version in a module's go.mod is bookkeeping, not a
+      # build input. One PR moves them all; the first group a dependency
+      # matches wins, so this precedes go-modules.
+      agent-modules-sdk:
+        patterns: ["github.com/weaveplatform/weaveplatform-agent-modules/*"]
+        update-types: ["major", "minor", "patch"]
       go-modules:
         patterns: ["*"]
         update-types: ["major", "minor", "patch"]
