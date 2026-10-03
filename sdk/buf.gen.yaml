@@ -1,0 +1,22 @@
+# The module-side copy of the agent protocol. agent-core owns proto/ and keeps
+# its own private generated code; this sdk generates its own from the same
+# sources at the core release named in ../.github/agent-core-version, the way
+# terraform-plugin-go carries its own tfplugin5 beside Terraform core's.
+#
+# Run from sdk/ with `make sdk-gen` at the repository root, which passes the
+# pinned core tag as the input. The plugin versions match agent-core's buf
+# workflow, so the committed headers and the drift check agree with core's.
+version: v2
+clean: true
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/weaveplatform/weaveplatform-agent-modules/sdk/gen/go
+plugins:
+  - local: protoc-gen-go
+    out: gen/go
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: gen/go
+    opt: paths=source_relative

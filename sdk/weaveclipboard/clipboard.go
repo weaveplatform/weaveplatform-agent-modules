@@ -1,0 +1,335 @@
+// Package weaveclipboard is the clipboard capability: report what the console
+// user's clipboard holds, read it, and replace it, with content of any size up
+// to weavewire.MaxClipboardBytes carried inline or as chunk streams.
+//
+// It is mechanism only. Which direction may flow, which formats and whether
+// files may cross are decided by the host before it asks; the service applies
+// the formats and size cap it is given and nothing else.
+package weaveclipboard
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveagent"
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavemodule"
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
+)
+
+// Backend is the console user's clipboard on one OS. Each per-OS module
+// supplies one; the module runs in that user's session, so a backend talks to
+// the clipboard directly.
+type Backend interface {
+	// Stat reports the change token and the formats on offer without
+	// reading their data.
+	Stat(ctx context.Context) (weavewire.ClipboardStatResponse, error)
+	// Read returns the representations in formats (all it has when formats
+	// is empty), with their data. A representation larger than maxBytes may
+	// be returned with its Size and no Data rather than read; the service
+	// leaves those out of the reply and lists them as omitted.
+	Read(ctx context.Context, formats []weavewire.ClipboardFormat, maxBytes int64) (Contents, error)
+	// Write replaces the clipboard with items, every one a representation
+	// of the same content, and reports the token afterwards and the formats
+	// the OS took.
+	Write(
+		ctx context.Context,
+		items []weavewire.ClipboardItem,
+	) (weavewire.ClipboardSetResponse, error)
+}
+
+// Contents is one consistent read of the clipboard.
+type Contents struct {
+	ChangeToken uint64
+	Items       []weavewire.ClipboardItem
+}
+
+// Errors a host can branch on, through the guest error's text.
+var (
+	// ErrTooLarge: content over weavewire.MaxClipboardBytes, or over
+	// weavewire.ClipboardInlineBytes without a transfer id to stream it.
+	ErrTooLarge = errors.New("weaveclipboard: content too large")
+	// ErrBadRequest: a request that does not describe content consistently.
+	ErrBadRequest = errors.New("weaveclipboard: bad request")
+	// ErrUpload: a set's uploaded content is missing, incomplete or broken.
+	ErrUpload = errors.New("weaveclipboard: upload")
+)
+
+// maxPendingUploads bounds the uploads held for a set that has not arrived.
+// A host uploads and then sets at once, so more than one in flight is a host
+// that died between the two; the oldest is dropped rather than letting
+// abandoned uploads hold MaxClipboardBytes each for the life of the module.
+const maxPendingUploads = 2
+
+// Service is the clipboard capability over an OS backend.
+type Service struct {
+	b    Backend
+	emit weaveagent.Emitter
+
+	mu      sync.Mutex
+	uploads map[string]*upload
+	order   []string
+}
+
+// NewService builds the clipboard service.
+func NewService(b Backend) *Service {
+	return &Service{b: b, uploads: make(map[string]*upload)}
+}
+
+// Capability implements weavemodule.Service.
+func (s *Service) Capability() weavewire.Capability { return weavewire.Clipboard }
+
+// Register implements weavemodule.Service.
+func (s *Service) Register(r *weavemodule.Registrar) error {
+	s.emit = r.Emitter()
+	r.Handle(weavewire.KindClipboardStat, s.handleStat)
+	r.HandleDeferred(weavewire.KindClipboardGet, s.handleGet)
+	r.Handle(weavewire.KindClipboardSet, s.handleSet)
+	r.Handle(weavewire.KindClipboardUpload, s.handleUpload)
+	return nil
+}
+
+func (s *Service) handleStat(ctx context.Context, _ []byte) ([]byte, error) {
+	st, err := s.b.Stat(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("weaveclipboard: stat: %w", err)
+	}
+	return weavewire.EncodePayload(st)
+}
+
+// handleGet reads the clipboard and replies with its content: inline when it
+// fits, otherwise as a manifest whose bytes follow as download chunks.
+//
+// The chunks are sent from the deferred half, after the reply is on the wire,
+// so the host has the manifest — sizes and order — before the first byte of
+// the stream reaches it.
+func (s *Service) handleGet(ctx context.Context, payload []byte) ([]byte, func(), error) {
+	var req weavewire.ClipboardGetRequest
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, nil, fmt.Errorf("%w: decoding get: %w", ErrBadRequest, err)
+		}
+	}
+	limit := req.MaxBytes
+	if limit <= 0 || limit > weavewire.MaxClipboardBytes {
+		limit = weavewire.MaxClipboardBytes
+	}
+
+	c, err := s.b.Read(ctx, req.Formats, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("weaveclipboard: reading: %w", err)
+	}
+	resp := weavewire.ClipboardGetResponse{ChangeToken: c.ChangeToken}
+	var total int64
+	for _, it := range c.Items {
+		if len(req.Formats) > 0 && !slices.Contains(req.Formats, it.Format) {
+			continue // the host's format policy holds even if a backend over-reads
+		}
+		if it.Data != nil {
+			it.Size = int64(len(it.Data))
+		}
+		// Over the per-item cap, over what the whole get may carry, or
+		// not read by the backend: listed, never truncated.
+		if it.Size > limit || total+it.Size > weavewire.MaxClipboardBytes ||
+			(it.Data == nil && it.Size > 0) {
+			resp.Omitted = append(resp.Omitted, weavewire.ClipboardItem{
+				Format: it.Format, Name: it.Name, Size: it.Size,
+			})
+			continue
+		}
+		total += it.Size
+		resp.Items = append(resp.Items, it)
+	}
+
+	if total <= weavewire.ClipboardInlineBytes {
+		out, err := weavewire.EncodePayload(resp)
+		return out, nil, err
+	}
+	if req.TransferID == "" {
+		return nil, nil, fmt.Errorf(
+			"%w: %d bytes is over the %d-byte inline limit and no transfer id was given",
+			ErrTooLarge,
+			total,
+			weavewire.ClipboardInlineBytes,
+		)
+	}
+
+	resp.Streamed = true
+	data := make([][]byte, len(resp.Items))
+	for i := range resp.Items {
+		data[i] = resp.Items[i].Data
+		resp.Items[i].Data = nil
+	}
+	out, err := weavewire.EncodePayload(resp)
+	if err != nil {
+		return nil, nil, err
+	}
+	after := func() {
+		w := weaveagent.NewStreamWriter(s.emit, weavewire.KindClipboardDownload, req.TransferID)
+		var werr error
+		for _, d := range data {
+			if _, werr = w.WriteContext(ctx, d); werr != nil {
+				break
+			}
+		}
+		// The EOF carries a failure partway, so the host never takes a
+		// short stream for the whole clipboard.
+		_ = w.Close(ctx, werr)
+	}
+	return out, after, nil
+}
+
+// handleSet replaces the clipboard with inline content or a finished upload.
+//
+// It runs in the module's ordered queue behind the upload chunks the host sent
+// first (weavewire.IsOrderedInbound), so an upload it names is complete unless
+// chunks were lost — which the stream's sequence numbers catch.
+func (s *Service) handleSet(ctx context.Context, payload []byte) ([]byte, error) {
+	var req weavewire.ClipboardSetRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("%w: decoding set: %w", ErrBadRequest, err)
+	}
+	if len(req.Items) == 0 {
+		return nil, fmt.Errorf("%w: a set needs at least one item", ErrBadRequest)
+	}
+	var total int64
+	for _, it := range req.Items {
+		if it.Format == "" {
+			return nil, fmt.Errorf("%w: an item has no format", ErrBadRequest)
+		}
+		if it.Size < 0 {
+			return nil, fmt.Errorf("%w: %s has a negative size", ErrBadRequest, it.Format)
+		}
+		total += it.Size
+	}
+	if total > weavewire.MaxClipboardBytes {
+		return nil, fmt.Errorf("%w: %d bytes is over the %d-byte limit",
+			ErrTooLarge, total, weavewire.MaxClipboardBytes)
+	}
+
+	items := slices.Clone(req.Items)
+	if req.TransferID == "" {
+		if err := checkInline(items); err != nil {
+			return nil, err
+		}
+	} else if err := s.attachUpload(req.TransferID, items, total); err != nil {
+		return nil, err
+	}
+
+	res, err := s.b.Write(ctx, items)
+	if err != nil {
+		return nil, fmt.Errorf("weaveclipboard: writing: %w", err)
+	}
+	return weavewire.EncodePayload(res)
+}
+
+// checkInline verifies each inline item's declared size against its data and
+// the inline limit.
+func checkInline(items []weavewire.ClipboardItem) error {
+	var total int64
+	for i := range items {
+		n := int64(len(items[i].Data))
+		if items[i].Size != 0 && items[i].Size != n {
+			return fmt.Errorf("%w: %s declares %d bytes and carries %d",
+				ErrBadRequest, items[i].Format, items[i].Size, n)
+		}
+		items[i].Size = n
+		total += n
+	}
+	if total > weavewire.ClipboardInlineBytes {
+		return fmt.Errorf("%w: %d bytes inline is over the %d-byte inline limit; upload it",
+			ErrTooLarge, total, weavewire.ClipboardInlineBytes)
+	}
+	return nil
+}
+
+// attachUpload takes the upload named id and splits it into items, in order,
+// by their declared sizes.
+func (s *Service) attachUpload(id string, items []weavewire.ClipboardItem, total int64) error {
+	s.mu.Lock()
+	u := s.uploads[id]
+	s.forget(id)
+	s.mu.Unlock()
+
+	switch {
+	case u == nil:
+		return fmt.Errorf("%w: nothing was uploaded as %q", ErrUpload, id)
+	case u.err != nil:
+		return u.err
+	case !u.asm.Done():
+		return fmt.Errorf("%w: %q was not finished — chunks were lost or the host stopped sending",
+			ErrUpload, id)
+	}
+	if err := u.asm.Err(); err != nil {
+		return fmt.Errorf("%w: %q: %w", ErrUpload, id, err)
+	}
+	data := u.buf.Bytes()
+	if int64(len(data)) != total {
+		return fmt.Errorf("%w: %q carried %d bytes and the items declare %d",
+			ErrUpload, id, len(data), total)
+	}
+	for i := range items {
+		items[i].Data, data = data[:items[i].Size:items[i].Size], data[items[i].Size:]
+	}
+	return nil
+}
+
+// upload is the host→guest half of a set larger than the inline limit.
+type upload struct {
+	asm weavewire.StreamAssembler
+	buf bytes.Buffer
+	err error // the first failure; later chunks are dropped
+}
+
+// handleUpload takes one chunk of an upload. It has no reply — the chunks are
+// notifications — so a failure is recorded on the upload and reported by the
+// set that claims it.
+func (s *Service) handleUpload(_ context.Context, payload []byte) ([]byte, error) {
+	var c weavewire.Chunk
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return nil, fmt.Errorf("%w: decoding upload chunk: %w", ErrUpload, err)
+	}
+	if c.StreamID == "" {
+		return nil, fmt.Errorf("%w: a chunk with no transfer id", ErrUpload)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u := s.uploads[c.StreamID]
+	if u == nil {
+		u = &upload{}
+		s.uploads[c.StreamID] = u
+		s.order = append(s.order, c.StreamID)
+		for len(s.order) > maxPendingUploads {
+			s.forget(s.order[0])
+		}
+	}
+	if u.err != nil {
+		return nil, u.err
+	}
+	data, err := u.asm.Accept(c)
+	switch {
+	case err != nil:
+		u.err = fmt.Errorf("%w: %q: %w", ErrUpload, c.StreamID, err)
+	case int64(u.buf.Len()+len(data)) > weavewire.MaxClipboardBytes:
+		u.err = fmt.Errorf("%w: %q is over the %d-byte limit",
+			ErrTooLarge, c.StreamID, weavewire.MaxClipboardBytes)
+	default:
+		u.buf.Write(data)
+		return nil, nil
+	}
+	// Drop what was received: the set that claims this upload fails anyway,
+	// and the bytes should not sit in memory until it does.
+	u.buf = bytes.Buffer{}
+	return nil, u.err
+}
+
+// forget drops an upload. The caller holds mu.
+func (s *Service) forget(id string) {
+	delete(s.uploads, id)
+	s.order = slices.DeleteFunc(s.order, func(o string) bool { return o == id })
+}

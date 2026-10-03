@@ -1,5 +1,8 @@
 # Binaries
 /bin/
+/.bin/
+# what `go build ./...` leaves in a capability module's directory
+/modules/*/weave-*
 *.exe
 *.exe~
 *.dll
@@ -12,9 +15,8 @@
 /cover/
 golangci-lint-report.sarif
 
-# Workspaces stay local: CI builds with GOWORK=off
-go.work
-go.work.sum
+# go.work is committed (it lists the modules); CI also builds each module
+# with GOWORK=off, so it cannot hide a missing requirement.
 
 # Editors and OS
 .idea/
