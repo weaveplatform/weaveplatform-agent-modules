@@ -6,6 +6,7 @@ go 1.27
 
 use (
 	./modules/weave-linux-clipboard
+	./modules/weave-linux-display
 	./modules/weave-linux-exec
 	./modules/weave-linux-metrics
 	./modules/weave-linux-power
@@ -13,6 +14,7 @@ use (
 	./modules/weave-linux-session
 	./modules/weave-linux-time
 	./modules/weave-macos-clipboard
+	./modules/weave-macos-display
 	./modules/weave-macos-exec
 	./modules/weave-macos-metrics
 	./modules/weave-macos-power
@@ -20,6 +22,7 @@ use (
 	./modules/weave-macos-session
 	./modules/weave-macos-time
 	./modules/weave-windows-clipboard
+	./modules/weave-windows-display
 	./modules/weave-windows-exec
 	./modules/weave-windows-metrics
 	./modules/weave-windows-power
