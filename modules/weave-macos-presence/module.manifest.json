@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "weave-macos-presence",
+  "version": "0.2.0",
+  "protocol": 1,
+  "zone": "A",
+  "privilege": "service",
+  "session": "system",
+  "platforms": [
+    {
+      "os": "darwin",
+      "arch": "arm64"
+    }
+  ],
+  "capabilities": [
+    "hypervisor.channel"
+  ],
+  "address": "weave.presence"
+}
