@@ -10,13 +10,13 @@ name: module-release
 #      size, and push the binaries and the sidecar to GHCR with ORAS as
 #      ghcr.io/<owner>/weaveplatform-modules/<id>:<version>;
 #   4. attach the same files to the module's GitHub release;
-#   5. ask weaveplatform-channels for a promotion PR (module-published).
+#   5. ask weaveplatform-release-channels for a promotion PR (module-published).
 #
 # release-please tags each module with its component, which is its path:
 # modules/weave-<os>-<capability>/vX.Y.Z. That is also the module's Go tag, so
 # one tag serves both, and the module directory is the tag less its "/v…".
 #
-# The published layout is a contract with weaveplatform-channels: its
+# The published layout is a contract with weaveplatform-release-channels: its
 # promote.yml pulls <id>:<version>, reads module.manifest.json from it, and
 # records each artifact as <ref>#<os>-<arch> with the stamped digest and size.
 # Binaries are named <id>-<goos>-<goarch>[.exe]; the sidecar is the module's own
@@ -104,7 +104,7 @@ jobs:
       ID: ${{ needs.module.outputs.id }}
       VERSION: ${{ needs.module.outputs.version }}
       TAG: ${{ needs.module.outputs.tag }}
-      CHANNELS_REPO: weaveplatform-channels
+      CHANNELS_REPO: weaveplatform-release-channels
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1

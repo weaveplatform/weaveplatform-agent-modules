@@ -24,7 +24,7 @@ The repositories split the way Terraform does:
 | `hashicorp/terraform`: owns the plugin protocol and keeps a private implementation of it | **weaveplatform-agent-core**: owns `proto/` and `schema/`, implements its side in `internal/`, ships no modules |
 | `terraform-plugin-go`, `terraform-plugin-framework`, `terraform-plugin-testing` | **`sdk/`** here: the module side of the protocol, the module runtime and its test harness |
 | providers, each released on its own | **`modules/`** here: one Go module and one release per capability per OS |
-| the Terraform Registry | **weaveplatform-channels**: the signed channel manifests devices follow |
+| the Terraform Registry | **weaveplatform-release-channels**: the signed release channels (`stable`, pinned snapshots) that say which module and image versions devices run |
 
 Dependencies point one way. Every module depends on the sdk, and nothing here depends on
 core: core and the sdk agree on the wire, not on a Go package. The sdk generates its own
@@ -169,7 +169,7 @@ A module's tag runs [`module-release.yml`](.github/workflows/module-release.yml)
    binaries and that sidecar are pushed with ORAS to
    `ghcr.io/weaveplatform/weaveplatform-modules/<id>:<version>`.
 4. The same files are attached to the module's GitHub release.
-5. A `module-published` dispatch asks weaveplatform-channels for a promotion PR, with a
+5. A `module-published` dispatch asks weaveplatform-release-channels for a promotion PR, with a
    token minted from the org App (`RP_APP_ID`, `RP_APP_PRIVATE_KEY`) or, failing that,
    `RELEASE_PLEASE_PAT`. A failed dispatch fails the job; re-run it with
    `workflow_dispatch` and the tag.
