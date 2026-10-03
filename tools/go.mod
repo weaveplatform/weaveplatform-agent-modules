@@ -33,7 +33,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/narqo/go-badge v0.0.0-20230821190521-c9a75c019a59 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
-	github.com/vladopajic/go-test-coverage/v2 v2.19.0 // indirect
+	github.com/vladopajic/go-test-coverage/v2 v2.20.0 // indirect
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
