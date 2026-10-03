@@ -116,6 +116,12 @@ func (w winClipboard) openRetrying() error {
 	return fmt.Errorf("%w: %w", errHeld, err)
 }
 
+// The memory calls behind every block, so tests can fail each one.
+var (
+	globalAlloc = memory.GlobalAlloc
+	globalLock  = memory.GlobalLock
+)
+
 // readBlock copies a clipboard memory block out. The block belongs to the
 // clipboard, so it is locked for the copy and never freed here.
 func readBlock(h foundation.HANDLE) ([]byte, bool) {
@@ -126,7 +132,7 @@ func readBlock(h foundation.HANDLE) ([]byte, bool) {
 	if size == 0 {
 		return nil, false
 	}
-	p, err := memory.GlobalLock(hg)
+	p, err := globalLock(hg)
 	if err != nil {
 		return nil, false
 	}
@@ -138,11 +144,11 @@ func readBlock(h foundation.HANDLE) ([]byte, bool) {
 // clipboard accepts. It is zeroed: an empty representation still needs a
 // block of one byte, and that byte must read as a terminator, not garbage.
 func newBlock(data []byte) (foundation.HANDLE, error) {
-	hg, err := memory.GlobalAlloc(memory.GHND, uintptr(max(len(data), 1)))
+	hg, err := globalAlloc(memory.GHND, uintptr(max(len(data), 1)))
 	if err != nil {
 		return 0, fmt.Errorf("GlobalAlloc %d bytes: %w", len(data), err)
 	}
-	p, err := memory.GlobalLock(hg)
+	p, err := globalLock(hg)
 	if err != nil {
 		_, _ = foundation.GlobalFree(hg)
 		return 0, fmt.Errorf("GlobalLock: %w", err)

@@ -17,6 +17,14 @@ import (
 
 var errBadName = errors.New("not a file name")
 
+// The filesystem calls staging and reading make, so tests can fail each one.
+var (
+	removeAll = os.RemoveAll
+	mkdir     = os.Mkdir
+	writeFile = os.WriteFile
+	readFile  = os.ReadFile
+)
+
 // stager holds the files a host sends, so the clipboard can offer them by
 // path: a paste in the guest then copies real files.
 type stager struct {
@@ -43,7 +51,7 @@ func (s *stager) files(items []weavewire.ClipboardItem) ([]string, error) {
 		return nil, fmt.Errorf("reading the staging directory: %w", err)
 	}
 	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(s.root, e.Name())); err != nil {
+		if err := removeAll(filepath.Join(s.root, e.Name())); err != nil {
 			return nil, fmt.Errorf("clearing the staging directory: %w", err)
 		}
 	}
@@ -57,11 +65,11 @@ func (s *stager) files(items []weavewire.ClipboardItem) ([]string, error) {
 			return nil, err
 		}
 		dir := filepath.Join(s.root, strconv.Itoa(len(paths)))
-		if err := os.Mkdir(dir, 0o700); err != nil {
+		if err := mkdir(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("staging %s: %w", name, err)
 		}
 		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, it.Data, 0o600); err != nil {
+		if err := writeFile(p, it.Data, 0o600); err != nil {
 			return nil, fmt.Errorf("staging %s: %w", name, err)
 		}
 		paths = append(paths, p)
@@ -103,7 +111,7 @@ func readFiles(paths []string, maxBytes int64) []weavewire.ClipboardItem {
 			Size:   fi.Size(),
 		}
 		if fi.Size() <= maxBytes {
-			data, err := os.ReadFile(p) //nolint:gosec // G304: the path is one the user copied
+			data, err := readFile(p)
 			if err != nil {
 				continue
 			}
