@@ -50,6 +50,12 @@ updates:
       - "/tools"
     schedule:
       interval: "daily"
+    # gRPC 1.84.0 carries GO-2026-6443 (server panic on a missing
+    # :authority/Host) and no 1.84 release fixes it; stay on 1.83.2 until a
+    # fixed release exists, then drop this and the deps-refresh pin.
+    ignore:
+      - dependency-name: "google.golang.org/grpc"
+        versions: ["1.84.x"]
     groups:
       go-modules:
         patterns: ["*"]
