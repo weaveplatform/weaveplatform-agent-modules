@@ -28,7 +28,7 @@ const (
 type Event struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Dotted topic, prefixed with the publishing module's id by core —
-	// subscribers can trust the origin. E.g. "sysinfo.inventory".
+	// subscribers can trust the origin. E.g. "presence.inventory".
 	Topic string `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
 	Data  []byte `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
 	// Core-stamped publish time, Unix milliseconds.
@@ -191,7 +191,7 @@ func (*PublishResponse) Descriptor() ([]byte, []int) {
 
 type SubscribeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Topic patterns to receive, e.g. "sysinfo.*". Empty subscribes to none.
+	// Topic patterns to receive, e.g. "presence.*". Empty subscribes to none.
 	Topics        []string `protobuf:"bytes,1,rep,name=topics,proto3" json:"topics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
