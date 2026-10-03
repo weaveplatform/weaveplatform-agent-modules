@@ -109,9 +109,17 @@ func TestResultKinds(t *testing.T) {
 			t.Errorf("IsResult(%q) != %v", kind, want)
 		}
 	}
-	if !weavewire.IsOrderedInbound(weavewire.KindExecStdin) ||
-		weavewire.IsOrderedInbound(weavewire.KindExecStart) {
-		t.Fatal("only stdin is ordered")
+	for kind, want := range map[string]bool{
+		weavewire.KindExecStdin:       true,
+		weavewire.KindClipboardUpload: true,
+		weavewire.KindClipboardSet:    true,
+		weavewire.KindExecStart:       false,
+		weavewire.KindClipboardGet:    false,
+		weavewire.KindClipboardStat:   false,
+	} {
+		if weavewire.IsOrderedInbound(kind) != want {
+			t.Errorf("IsOrderedInbound(%s) != %v", kind, want)
+		}
 	}
 }
 

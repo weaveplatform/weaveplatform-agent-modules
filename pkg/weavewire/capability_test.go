@@ -12,10 +12,12 @@ import (
 // renamed or dropped by accident changes an address every module and host
 // depend on, and this is where that shows up.
 func TestTheCapabilityVocabulary(t *testing.T) {
-	implemented := []weavewire.Capability{"exec", "metrics", "power", "presence", "time"}
+	implemented := []weavewire.Capability{
+		"clipboard", "display", "exec", "metrics", "power", "presence", "session", "time",
+	}
 	reserved := []weavewire.Capability{
-		"clipboard", "disk", "display", "files", "freeze", "logs", "network",
-		"osquery", "provision", "session", "shares", "software", "tools", "tunnel",
+		"disk", "files", "freeze", "logs", "network",
+		"osquery", "provision", "shares", "software", "tools", "tunnel",
 	}
 	if got := weavewire.Implemented(); !slices.Equal(got, implemented) {
 		t.Fatalf("implemented = %v", got)
@@ -135,4 +137,56 @@ func FuzzAddressOf(f *testing.F) {
 			t.Fatalf("CapabilityOf and AddressOf disagree on %q", kind)
 		}
 	})
+}
+
+// The ops of each capability, spelled out: they are what every module serves
+// and every host sends, and a kind renamed by accident is a command that goes
+// unanswered.
+func TestTheOpsOfEachCapability(t *testing.T) {
+	for c, want := range map[weavewire.Capability][]string{
+		weavewire.Clipboard: {
+			"weave.clipboard.get", "weave.clipboard.set",
+			"weave.clipboard.stat", "weave.clipboard.upload",
+		},
+		weavewire.Session:  {"weave.session.current", "weave.session.list", "weave.session.lock"},
+		weavewire.Display:  {"weave.display.list", "weave.display.set"},
+		weavewire.Presence: {"weave.presence.hello", "weave.presence.inventory"},
+		weavewire.Exec: {
+			"weave.exec.resize", "weave.exec.signal", "weave.exec.start", "weave.exec.stdin",
+		},
+		weavewire.Power:   {"weave.power.restart", "weave.power.shutdown"},
+		weavewire.Time:    {"weave.time.get", "weave.time.set"},
+		weavewire.Metrics: {"weave.metrics.sample"},
+	} {
+		if got := c.Ops(); !slices.Equal(got, want) {
+			t.Errorf("%s ops = %v, want %v", c, got, want)
+		}
+	}
+	// Events are guest-to-host, so they are never ops a module serves.
+	for _, event := range []string{
+		weavewire.KindClipboardDownload, weavewire.KindSessionChanged,
+		weavewire.KindExecStdout, weavewire.KindExecExit,
+	} {
+		if slices.Contains(weavewire.AllCommandKinds(), event) {
+			t.Errorf("event %s is listed as a command", event)
+		}
+		if c, ok := weavewire.CapabilityOf(event); !ok || !slices.Contains(weavewire.Implemented(), c) {
+			t.Errorf("event %s is not under an implemented capability", event)
+		}
+	}
+}
+
+// Clipboard and display only exist in the console user's session; everything
+// else runs as system. A host's no-session handling and every module's
+// manifest check key off this.
+func TestPlacement(t *testing.T) {
+	for _, c := range weavewire.Capabilities() {
+		want := weavewire.PlacementSystem
+		if c == weavewire.Clipboard || c == weavewire.Display {
+			want = weavewire.PlacementPerUserConsole
+		}
+		if got := c.Placement(); got != want {
+			t.Errorf("%s placement = %q, want %q", c, got, want)
+		}
+	}
 }

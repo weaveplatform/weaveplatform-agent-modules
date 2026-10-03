@@ -13,8 +13,8 @@ var guestOS = map[string]string{"linux": "linux", "macos": "darwin", "windows": 
 
 // CheckManifest reports whether a module's manifest declares what core needs
 // to route the host's commands to svc: a valid manifest whose channel address
-// is the capability's, whose id is weave-<os>-<capability>, and whose
-// platforms are that one OS.
+// is the capability's, whose session is the capability's placement, whose id
+// is weave-<os>-<capability>, and whose platforms are that one OS.
 //
 // The address is the part that fails silently. Core routes by
 // Manifest.ChannelAddress(), so a manifest that omits address answers to its
@@ -30,6 +30,20 @@ func CheckManifest(m *manifest.Manifest, svc Service) error {
 			errManifest,
 			m.ID,
 			got,
+			want,
+		)
+	}
+	// Core starts a module where its manifest says. A clipboard declared as
+	// system would run in session 0 or the wrong bootstrap and find no
+	// clipboard; a power module declared per-user-console would wait for a
+	// login it does not need.
+	if got, want := m.Session, c.Placement(); got != want {
+		return fmt.Errorf(
+			"%w: %s declares session %q, %s runs in %q",
+			errManifest,
+			m.ID,
+			got,
+			c,
 			want,
 		)
 	}

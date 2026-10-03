@@ -35,27 +35,31 @@ See [docs/decisions/0001-capability-modules-per-os.md](docs/decisions/0001-capab
 | presence | hello (answerable before authentication), heartbeat, readiness, inventory (addresses, OS, hostname, installed modules) | system | |
 | exec | run a process with pipes or a terminal; stdin, resize, signal, wait | system (+ run-as user) | Windows: ConPTY |
 | power | shutdown, restart | system | |
-| clipboard | stat, get, set | per-user-console | macOS JXA + pbcopy; Linux wl-clipboard/xclip; Windows clipboard API |
+| clipboard | stat (change token, formats), get, set; content over 256 KiB streams as chunks (`upload`, `download`) | per-user-console | macOS JXA + pbcopy; Linux wl-clipboard/xclip; Windows clipboard API |
 | time | get, set, resync after resume | system | |
-| metrics | CPU, memory, disk, network | system | |
+| metrics | sample: CPU, load average, memory, swap, disk, process count | system | |
 | network | apply static interface configuration, list interfaces | system | Linux netlink; macOS `networksetup`; Windows netsh/WMI |
 | files | read, write, stat, list, remove; chunked transfer | system (+ run-as user) | |
 | shares | mount and unmount host shares | system | Linux virtiofs/9p; macOS virtiofs tags; Windows virtiofs/SMB |
 | tunnel | forward a TCP port over core's connection | system | |
 | provision | first boot: hostname, users, SSH keys, setup-complete marker | system | Linux defers to cloud-init when present |
-| session | console user, autologon, lock/unlock, session changes | system | |
+| session | current (console user), list, lock; `weave.session.changed` events | system | |
 | freeze | freeze and thaw filesystems around a snapshot | system | Linux fsfreeze; Windows VSS; macOS sync only |
 | disk | grow the partition and filesystem after a resize | system | Linux growpart + resize2fs/xfs_growfs; macOS `diskutil apfs resizeContainer`; Windows `Resize-Partition` |
-| display | set and resize the resolution | per-user-console | Linux xrandr/wlr; Windows `ChangeDisplaySettingsEx` |
+| display | list (modes, scale), set (resolution, scale) | per-user-console | Linux xrandr/wlr; Windows `ChangeDisplaySettingsEx` |
 | logs | stream and tail the journal, unified log or Event Log | system | |
 | software | installed packages and pending updates (SBOM input) | system | dpkg/rpm; pkgutil/brew; winget/registry |
 | tools | list tools, call a tool with JSON | system | |
 | osquery | run SQL queries, list tables | system | osquery-go against the osqueryd extension socket |
 
 `pkg/weavewire` defines the wire contract (ops and payloads) for presence, exec, power,
-time and metrics today. The other names are reserved there, and each one gets its ops
-when its module lands. A variant answers `unsupported` (`weavewire.CodeUnsupported`) for
-an op its OS cannot perform, rather than imitating it.
+time, metrics, clipboard, session and display today; clipboard, session and display have
+their services in `pkg` and no per-OS modules here yet. The other names are reserved
+there, and each one gets its ops when its module lands. A variant answers `unsupported`
+(`weavewire.CodeUnsupported`) for an op its OS cannot perform, rather than imitating it.
+
+Autologon is not a session op: it configures how the machine boots, which is
+provisioning. Unlocking needs the user's credentials and is not an op either.
 
 ## Layout
 
@@ -68,6 +72,7 @@ pkg/                       github.com/weaveplatform/weaveplatform-agent-modules/
     weavemoduletest/       in-memory host and a stand-in core for testing services and hosts
   weaveagent/              dispatch and event emission under weavemodule
   weavepresence/ weaveexec/ weavepower/ weavetime/ weavemetrics/
+  weaveclipboard/ weavesession/ weavedisplay/
                            OS-neutral capability services; each per-OS module supplies the backend
   weavepolicy/             exec policy and audit records
 modules/                   one Go module per capability per OS, each built only for its OS
@@ -116,6 +121,33 @@ s, _ := client.Exec(ctx, weavewire.ExecRequest{Argv: []string{"uname", "-a"}})
 ```
 
 `weaveclient.Dial` takes a `Dialer` and authenticates in the same step.
+
+### The console session
+
+Clipboard and display run in the session of the user at the physical console
+(`weavewire.PlacementPerUserConsole`, checked by `weavemodule.CheckManifest`). With
+nobody logged in there, core holds those modules in `waiting-for-session` and drops what
+is sent to them, so the host sees silence rather than a refusal. `weaveclient` bounds
+every call to such a capability with `Options.SessionTimeout` (10 s by default) and
+reports it as an error matching both `weaveclient.ErrNoSession` and
+`context.DeadlineExceeded`. Session runs as system and always answers, so
+`SessionCurrent` tells "nobody is logged in" from "no module installed", and
+`OnSessionChanged` reports logins, logouts, locks and user switches as they happen.
+Presence's inventory does not report the console session today; it may later.
+
+```go
+st, err := client.ClipboardStat(ctx)          // → weave.clipboard; poll it, there is no change event
+if errors.Is(err, weaveclient.ErrNoSession) {
+    who, _ := client.SessionCurrent(ctx)       // nil: nobody at the console
+}
+got, _ := client.ClipboardGet(ctx, weavewire.ClipboardGetRequest{
+    Formats: []weavewire.ClipboardFormat{weavewire.ClipboardText, weavewire.ClipboardPNG},
+})
+set, _ := client.ClipboardSet(ctx, got.Items) // set.ChangeToken: the host's own write
+```
+
+Clipboard policy — direction, formats, whether files cross, size caps — is the host's;
+the guest applies the formats and cap a get names and writes what a set sends.
 
 ## Building and testing
 

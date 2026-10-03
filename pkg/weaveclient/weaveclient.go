@@ -41,6 +41,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/weaveplatform/weaveplatform-agent-core/sdk/hvchannel"
 	"github.com/weaveplatform/weaveplatform-agent-modules/pkg/weavewire"
@@ -67,6 +68,8 @@ type Client struct {
 	idPrefix string
 	nextID   atomic.Uint64
 
+	sessionTimeout time.Duration
+
 	mu      sync.Mutex
 	pending map[string]chan pendingReply
 	events  map[string][]EventHandler
@@ -77,6 +80,9 @@ type Client struct {
 	// that would accumulate for the life of the connection.
 	execs        map[string]*ExecSession
 	execHandlers bool
+	// downloads routes clipboard get streams by transfer id, the same way.
+	downloads       map[string]*download
+	downloadHandler bool
 
 	// control carries channel-level frames (the authentication handshake) from
 	// the read loop to whoever is waiting on them. Buffered so the loop never
@@ -92,7 +98,29 @@ type Client struct {
 type Options struct {
 	// Log receives channel-level warnings. Defaults to slog.Default().
 	Log *slog.Logger
+	// SessionTimeout bounds how long a call to a per-user-console
+	// capability (clipboard, display) waits for its answer before reporting
+	// ErrNoSession. Zero means DefaultSessionTimeout; negative waits as long
+	// as the call's own context allows.
+	SessionTimeout time.Duration
 }
+
+// DefaultSessionTimeout is how long a per-user-console call waits for an
+// answer by default. A module that is running answers these in milliseconds;
+// the wait is for one that is not, and should end well before a person
+// watching it gives up.
+const DefaultSessionTimeout = 10 * time.Second
+
+// ErrNoSession matches (via errors.Is) a call to a per-user-console capability
+// that got no answer in time. Core runs those modules only while a user is
+// logged in at the console and holds them in waiting-for-session otherwise,
+// dropping what is sent to them — so silence, not a refusal, is what "nobody
+// is logged in" looks like from here. The same silence comes from a machine
+// with no module for the capability installed; Session tells the two apart.
+//
+// The error also matches context.DeadlineExceeded, for callers that already
+// treat that as "no answer".
+var ErrNoSession = errors.New("weaveclient: no answer from the console session")
 
 // New wraps an already-open host-side channel connection and starts the read
 // loop. The Client owns rwc from this point and closes it when the loop ends,
@@ -113,15 +141,19 @@ func New(ctx context.Context, rwc io.ReadWriteCloser, opts Options) *Client {
 	_, _ = rand.Read(seed[:])
 
 	c := &Client{
-		log:      log,
-		conn:     rwc,
-		r:        bufio.NewReader(rwc),
-		w:        bufio.NewWriter(rwc),
-		idPrefix: hex.EncodeToString(seed[:]),
-		pending:  make(map[string]chan pendingReply),
-		events:   make(map[string][]EventHandler),
-		control:  make(chan hvchannel.Envelope, 4),
-		done:     make(chan struct{}),
+		log:            log,
+		conn:           rwc,
+		r:              bufio.NewReader(rwc),
+		w:              bufio.NewWriter(rwc),
+		idPrefix:       hex.EncodeToString(seed[:]),
+		sessionTimeout: opts.SessionTimeout,
+		pending:        make(map[string]chan pendingReply),
+		events:         make(map[string][]EventHandler),
+		control:        make(chan hvchannel.Envelope, 4),
+		done:           make(chan struct{}),
+	}
+	if c.sessionTimeout == 0 {
+		c.sessionTimeout = DefaultSessionTimeout
 	}
 	go c.readLoop()
 	// The read loop blocks in Read, where a context cannot reach it. Closing
@@ -167,7 +199,44 @@ func (c *Client) Close() error {
 // a caller can tell "the guest refused" from "the channel broke" — the two need
 // very different handling, and collapsing them is how a host ends up hard-
 // stopping a VM that merely declined a request.
+//
+// A call to a per-user-console capability that goes unanswered ends after
+// Options.SessionTimeout with an error matching ErrNoSession.
 func (c *Client) Call(ctx context.Context, kind string, payload, out any) error {
+	consoleCap, perUser := consoleCapability(kind)
+	if !perUser {
+		return c.call(ctx, kind, payload, out)
+	}
+	if c.sessionTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.sessionTimeout)
+		defer cancel()
+	}
+	err := c.call(ctx, kind, payload, out)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return noSession(kind, consoleCap)
+	}
+	return err
+}
+
+// consoleCapability reports whether kind belongs to a capability that runs in
+// the console user's session.
+func consoleCapability(kind string) (weavewire.Capability, bool) {
+	c, ok := weavewire.CapabilityOf(kind)
+	return c, ok && c.Placement() == weavewire.PlacementPerUserConsole
+}
+
+// noSession is the error for a per-user-console op that went unanswered —
+// whether our deadline or the caller's ran out, the likely cause is the same.
+func noSession(kind string, c weavewire.Capability) error {
+	return fmt.Errorf(
+		"%w: %s got no answer; core runs weave.%s only while a user is logged in at the console "+
+			"(weave.session.current tells whether one is): %w",
+		ErrNoSession, kind, c, context.DeadlineExceeded,
+	)
+}
+
+func (c *Client) call(ctx context.Context, kind string, payload, out any) error {
 	if weavewire.IsResult(kind) {
 		return fmt.Errorf("%w: %q is a reply kind, not a command", ErrBadKind, kind)
 	}

@@ -13,27 +13,27 @@ type Capability string
 
 // Capabilities with a wire contract today.
 const (
-	Presence Capability = "presence"
-	Exec     Capability = "exec"
-	Power    Capability = "power"
-	Time     Capability = "time"
-	Metrics  Capability = "metrics"
+	Presence  Capability = "presence"
+	Exec      Capability = "exec"
+	Power     Capability = "power"
+	Time      Capability = "time"
+	Metrics   Capability = "metrics"
+	Clipboard Capability = "clipboard"
+	Session   Capability = "session"
+	Display   Capability = "display"
 )
 
 // Reserved capabilities. The names are fixed now so no other module claims
 // their addresses; their ops are defined here when their modules land, because
 // an op without a payload schema is a contract nobody can implement.
 const (
-	Clipboard Capability = "clipboard"
 	Network   Capability = "network"
 	Files     Capability = "files"
 	Shares    Capability = "shares"
 	Tunnel    Capability = "tunnel"
 	Provision Capability = "provision"
-	Session   Capability = "session"
 	Freeze    Capability = "freeze"
 	Disk      Capability = "disk"
-	Display   Capability = "display"
 	Logs      Capability = "logs"
 	Software  Capability = "software"
 	Tools     Capability = "tools"
@@ -79,11 +79,45 @@ var capabilityOps = map[Capability][]string{
 	Power:    sorted(KindPowerShutdown, KindPowerRestart),
 	Time:     sorted(KindTimeGet, KindTimeSet),
 	Metrics:  sorted(KindMetricsSample),
+	Clipboard: sorted(
+		KindClipboardStat, KindClipboardGet, KindClipboardSet, KindClipboardUpload,
+	),
+	Session: sorted(KindSessionCurrent, KindSessionList, KindSessionLock),
+	Display: sorted(KindDisplayList, KindDisplaySet),
 }
 
 var reservedCapabilities = []Capability{
-	Clipboard, Network, Files, Shares, Tunnel, Provision, Session,
-	Freeze, Disk, Display, Logs, Software, Tools, Osquery,
+	Network, Files, Shares, Tunnel, Provision,
+	Freeze, Disk, Logs, Software, Tools, Osquery,
+}
+
+// Where a capability's module runs, as its manifest's `session` declares it.
+// The values are agent-core's manifest session names.
+const (
+	// PlacementSystem is core's own session, as root or the service account.
+	PlacementSystem = "system"
+	// PlacementPerUserConsole is the session of the user at the physical
+	// console, as that user. Core starts such a module only while someone is
+	// logged in there and holds it in waiting-for-session otherwise, so a
+	// command for it can go unanswered on a perfectly healthy machine.
+	PlacementPerUserConsole = "per-user-console"
+)
+
+// perUserConsole lists the capabilities that only exist inside the console
+// user's session: the clipboard and the display belong to a desktop, and a
+// system process sees neither (session 0 on Windows, the wrong bootstrap on
+// macOS, no compositor socket on Linux).
+var perUserConsole = []Capability{Clipboard, Display}
+
+// Placement is the session the capability's modules run in: PlacementSystem or
+// PlacementPerUserConsole. Every OS variant declares the same one, and a host
+// uses it to tell "nobody is logged in" from "no agent" when a command goes
+// unanswered.
+func (c Capability) Placement() string {
+	if slices.Contains(perUserConsole, c) {
+		return PlacementPerUserConsole
+	}
+	return PlacementSystem
 }
 
 func sorted(kinds ...string) []string {

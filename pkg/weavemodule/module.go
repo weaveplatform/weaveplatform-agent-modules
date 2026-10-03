@@ -47,6 +47,14 @@ type Stopper interface {
 	Stop(ctx context.Context) error
 }
 
+// Starter is implemented by a Service that runs work of its own for as long
+// as the module does, such as watching the OS for a change to report as an
+// event. Start runs once the module is receiving; ctx ends when it stops.
+// Start must not block: it launches the work and returns.
+type Starter interface {
+	Start(ctx context.Context) error
+}
+
 // HealthReporter is implemented by a Service whose health can be other than
 // healthy, for example while an OS facility it needs is absent.
 type HealthReporter interface {
@@ -124,8 +132,9 @@ func (m *Module) Kinds() []string {
 	return slices.Clone(m.kinds)
 }
 
-// Start begins consuming inbound hypervisor commands. The receive loop runs
-// on a background context so it outlives the Start RPC; Stop cancels it.
+// Start begins consuming inbound hypervisor commands, then starts the
+// service's own work if it has any. Both run on a background context so they
+// outlive the Start RPC; Stop cancels it.
 func (m *Module) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	in, err := m.host.Transport().Receive(runCtx)
@@ -137,6 +146,14 @@ func (m *Module) Start(ctx context.Context) error {
 	m.cancel = cancel
 	m.mu.Unlock()
 	go m.disp.Run(runCtx, in)
+	if s, ok := m.svc.(Starter); ok {
+		if err := s.Start(runCtx); err != nil {
+			// A module that failed to start must not keep answering: core
+			// reports it failed and will start it again.
+			_ = m.Stop(ctx)
+			return fmt.Errorf("weavemodule: %s: starting: %w", m.id, err)
+		}
+	}
 	return nil
 }
 
