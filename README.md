@@ -35,7 +35,7 @@ See [docs/decisions/0001-capability-modules-per-os.md](docs/decisions/0001-capab
 | presence | hello (answerable before authentication), heartbeat, readiness, inventory (addresses, OS, hostname, installed modules) | system | |
 | exec | run a process with pipes or a terminal; stdin, resize, signal, wait | system (+ run-as user) | Windows: ConPTY |
 | power | shutdown, restart | system | |
-| clipboard | stat (change token, formats), get, set; content over 256 KiB streams as chunks (`upload`, `download`) | per-user-console | macOS JXA + pbcopy; Linux wl-clipboard/xclip; Windows clipboard API |
+| clipboard | stat (change token, formats), get, set; content over 256 KiB streams as chunks (`upload`, `download`) | per-user-console | macOS NSPasteboard; Linux wl-clipboard/xclip (one representation per write, content-digest token); Windows clipboard API (no PDF) |
 | time | get, set, resync after resume | system | |
 | metrics | sample: CPU, load average, memory, swap, disk, process count | system | |
 | network | apply static interface configuration, list interfaces | system | Linux netlink; macOS `networksetup`; Windows netsh/WMI |
@@ -43,19 +43,18 @@ See [docs/decisions/0001-capability-modules-per-os.md](docs/decisions/0001-capab
 | shares | mount and unmount host shares | system | Linux virtiofs/9p; macOS virtiofs tags; Windows virtiofs/SMB |
 | tunnel | forward a TCP port over core's connection | system | |
 | provision | first boot: hostname, users, SSH keys, setup-complete marker | system | Linux defers to cloud-init when present |
-| session | current (console user), list, lock; `weave.session.changed` events | system | |
+| session | current (console user), list, lock; `weave.session.changed` events | system (privilege: system on Linux, service on macOS and Windows) | Linux logind + loginctl; macOS SystemConfiguration + IOConsoleUsers, lock unsupported; Windows WTS, lock unsupported |
 | freeze | freeze and thaw filesystems around a snapshot | system | Linux fsfreeze; Windows VSS; macOS sync only |
 | disk | grow the partition and filesystem after a resize | system | Linux growpart + resize2fs/xfs_growfs; macOS `diskutil apfs resizeContainer`; Windows `Resize-Partition` |
-| display | list (modes, scale), set (resolution, scale) | per-user-console | Linux xrandr/wlr; Windows `ChangeDisplaySettingsEx` |
+| display | list (modes, scale), set (resolution, scale) | per-user-console | macOS CoreGraphics (listed modes only); Linux wlr-randr (wlroots) or xrandr, unsupported on other Wayland compositors and with no display server; Windows `ChangeDisplaySettingsEx`, scale read-only |
 | logs | stream and tail the journal, unified log or Event Log | system | |
 | software | installed packages and pending updates (SBOM input) | system | dpkg/rpm; pkgutil/brew; winget/registry |
 | tools | list tools, call a tool with JSON | system | |
 | osquery | run SQL queries, list tables | system | osquery-go against the osqueryd extension socket |
 
 `pkg/weavewire` defines the wire contract (ops and payloads) for presence, exec, power,
-time, metrics, clipboard, session and display today; clipboard, session and display have
-their services in `pkg` and no per-OS modules here yet. The other names are reserved
-there, and each one gets its ops when its module lands. A variant answers `unsupported`
+time, metrics, clipboard, session and display today, each with a module per OS. The other
+names are reserved there, and each one gets its ops when its module lands. A variant answers `unsupported`
 (`weavewire.CodeUnsupported`) for an op its OS cannot perform, rather than imitating it.
 
 Autologon is not a session op: it configures how the machine boots, which is
@@ -93,6 +92,17 @@ modules/                   one Go module per capability per OS, each built only 
                            go-bindings-macosplatform; sysctl and statfs via the standard library
   weave-windows-metrics/   metrics for Windows: system times, memory status, performance info and
                            disk space via go-bindings-win32
+  weave-linux-clipboard/   clipboard for Linux: wl-clipboard under Wayland, xclip under X11 (content digest as change token)
+  weave-macos-clipboard/   clipboard for macOS: NSPasteboard via go-bindings-macosplatform
+  weave-windows-clipboard/ clipboard for Windows: the Win32 clipboard API via go-bindings-win32
+  weave-linux-session/     session for Linux: systemd-logind state files, loginctl for lock and LockedHint
+  weave-macos-session/     session for macOS: SystemConfiguration console user and IOKit IOConsoleUsers via
+                           go-bindings-macosplatform
+  weave-windows-session/   session for Windows: WTS console, session info and enumeration via go-bindings-win32
+  weave-linux-display/     display for Linux: wlr-randr on a wlroots compositor, xrandr (+ cvt for new modes) on X11
+  weave-macos-display/     display for macOS: CoreGraphics display modes via go-bindings-macosplatform
+  weave-windows-display/   display for Windows: EnumDisplaySettings, ChangeDisplaySettingsEx and GetDpiForMonitor
+                           via go-bindings-win32
 tools/                     pinned developer tools (go-test-coverage, govulncheck); not in go.work
 ```
 
