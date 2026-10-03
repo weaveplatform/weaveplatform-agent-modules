@@ -104,16 +104,25 @@ type ExecExit struct {
 // IsOrderedInbound reports whether a host→guest kind must be applied in the
 // order the host sent it, rather than concurrently with its neighbours.
 //
-// Only the stdin stream qualifies. Its chunks are meaningful only in sequence,
-// and the EOF that closes the pipe is carried in the same kind — so a dispatcher
+// Exec stdin and a clipboard upload qualify. Their chunks are meaningful only
+// in sequence, and the EOF that ends them is carried in the same kind — so a dispatcher
 // that runs them concurrently can close the pipe before the data it was meant to
 // carry, and every write after that fails with "file already closed". The host
 // sends them in order and the channel preserves that order; this is the marker
 // that says not to discard it.
 //
+// A clipboard set joins the same queue: it applies the upload chunks the host
+// sent before it, and behind them in the queue it cannot run until every one
+// has been taken. The queue is one
+// module's, so this delays nothing outside the clipboard.
+//
 // Everything else is independent: an inventory request has no ordering
 // relationship with a power request, and forcing one would only let a slow
 // operation delay an urgent one.
 func IsOrderedInbound(kind string) bool {
-	return kind == KindExecStdin
+	switch kind {
+	case KindExecStdin, KindClipboardUpload, KindClipboardSet:
+		return true
+	}
+	return false
 }
