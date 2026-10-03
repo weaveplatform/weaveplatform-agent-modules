@@ -51,7 +51,7 @@ agent-core owns `proto/` and keeps its own implementation of the protocol
   if a host wants one, is an event `weavepresence` emits.
 - **Modules publish from here.** Each module releases on its own tag, and this
   repository's `module-release.yml` builds it, pushes it to GHCR and offers it to
-  weaveplatform-channels for promotion. Core has no module pipeline, as Terraform core has
+  weaveplatform-release-channels for promotion. Core has no module pipeline, as Terraform core has
   no provider release workflow.
 
 ## Consequences
