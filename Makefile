@@ -8,7 +8,7 @@ TOOLS := GOWORK=off $(GO) tool -modfile=$(ROOT)/tools/go.mod
 
 # Every module in the workspace, from go.work: a module that has not joined the
 # workspace is not built here, and CI fails the PR that forgot to add it.
-MODULES := $(shell $(GO) work edit -json | sed -n 's/.*"DiskPath": "\.\/\(.*\)".*/\1/p')
+WORKSPACE := $(shell $(GO) work edit -json | sed -n 's/.*"DiskPath": "\.\/\(.*\)".*/\1/p')
 
 # Coverage profiles are named for the OS that produced them, so the per-OS
 # profiles CI collects merge without renaming; .testcoverage.yml lists them.
@@ -24,13 +24,13 @@ module_goos = case $$m in modules/weave-linux-*) mos=linux;; modules/weave-macos
 # Run one recipe line in every module, stopping at the first failure. $$mos is
 # the module's own GOOS, if it has one.
 define each_module
-	@set -e; for m in $(MODULES); do $(module_goos); echo "== $$m"; (cd $$m && $(1)); done
+	@set -e; for m in $(WORKSPACE); do $(module_goos); echo "== $$m"; (cd $$m && $(1)); done
 endef
 
 # As each_module, skipping a capability module for another OS: its tests and
 # coverage only exist on its own.
 define each_host_module
-	@set -e; for m in $(MODULES); do $(module_goos); \
+	@set -e; for m in $(WORKSPACE); do $(module_goos); \
 		if [ -n "$$mos" ] && [ "$$mos" != "$(HOST_OS)" ]; then echo "== $$m (skipped: $$mos only)"; continue; fi; \
 		echo "== $$m"; (cd $$m && $(1)); done
 endef
@@ -41,7 +41,7 @@ help:
 
 ## modules: print the modules make and CI operate on
 modules:
-	@printf '%s\n' $(MODULES)
+	@printf '%s\n' $(WORKSPACE)
 
 ## test: every module's tests for this OS (race, shuffle) with a coverage profile for this OS
 test:
@@ -53,7 +53,7 @@ standalone:
 
 ## cover: enforce each module's .testcoverage.yml over the profiles present (run make test first)
 cover:
-	@set -e; for m in $(MODULES); do $(module_goos); \
+	@set -e; for m in $(WORKSPACE); do $(module_goos); \
 		if [ -n "$$mos" ] && [ "$$mos" != "$(HOST_OS)" ]; then echo "== $$m (skipped: $$mos only)"; continue; fi; \
 		echo "== $$m"; ( \
 		cd $$m; \
@@ -101,11 +101,35 @@ compat:
 	@test -n "$(AGENT_DIR)" || { echo "set AGENT_DIR to a directory holding weave-agent, weavectl and weavemanifest"; exit 1; }
 	cd sdk && WEAVE_AGENT_DIR='$(AGENT_DIR)' GOWORK=off $(GO) test -count=1 -run TestUnderReleasedAgent -v ./internal/compatfixture
 
-## clean: remove coverage profiles
+# Local bring-up: Linux module packages for an apt repository beside core's
+# weave-agent package (core's packaging/apt). Each module is built the way
+# module-release.yml builds it, then packaged by packaging/moduledeb.
+ARCH ?= $(shell $(GO) env GOARCH)
+MODULES ?= $(filter weave-linux-%,$(notdir $(WORKSPACE)))
+DIST := $(ROOT)/dist
+MODULEDEB := $(ROOT)/.bin/moduledeb
+
+## debs: Linux module .debs in dist/ (ARCH=amd64|arm64, MODULES="weave-linux-presence ..."; default all)
+debs:
+	@mkdir -p $(ROOT)/.bin $(DIST)/.build
+	cd packaging/moduledeb && GOWORK=off $(GO) build -o $(MODULEDEB) .
+	@set -e; for id in $(MODULES); do \
+		case $$id in weave-linux-*) ;; *) echo "$$id is not a Linux module"; exit 1;; esac; \
+		dir=$(ROOT)/modules/$$id; \
+		[ -f $$dir/module.manifest.json ] || { echo "no module $$id under modules/"; exit 1; }; \
+		echo "== $$id linux/$(ARCH)"; \
+		(cd $$dir && CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) GOWORK=off \
+			$(GO) build -trimpath -o $(DIST)/.build/$$id-linux-$(ARCH) .); \
+		$(MODULEDEB) -binary $(DIST)/.build/$$id-linux-$(ARCH) \
+			-manifest $$dir/module.manifest.json -arch $(ARCH) -out $(DIST); \
+	done
+
+## clean: remove coverage profiles and dist/
 clean:
-	@for m in $(MODULES); do rm -f $$m/cover-*.out; done
+	@for m in $(WORKSPACE); do rm -f $$m/cover-*.out; done
+	rm -rf $(DIST)
 
 ## gate: everything CI runs, in order
 gate: vet-all-os lint test standalone cover vuln
 
-.PHONY: help modules test standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat clean gate
+.PHONY: help modules test standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat debs clean gate

@@ -28,5 +28,6 @@ use (
 	./modules/weave-windows-presence
 	./modules/weave-windows-session
 	./modules/weave-windows-time
+	./packaging/moduledeb
 	./sdk
 )
