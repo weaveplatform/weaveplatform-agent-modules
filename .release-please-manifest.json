@@ -14,5 +14,14 @@
   "modules/weave-windows-time": "0.1.0",
   "modules/weave-linux-metrics": "0.1.0",
   "modules/weave-macos-metrics": "0.1.0",
-  "modules/weave-windows-metrics": "0.1.0"
+  "modules/weave-windows-metrics": "0.1.0",
+  "modules/weave-linux-clipboard": "0.0.0",
+  "modules/weave-macos-clipboard": "0.0.0",
+  "modules/weave-windows-clipboard": "0.0.0",
+  "modules/weave-linux-session": "0.0.0",
+  "modules/weave-macos-session": "0.0.0",
+  "modules/weave-windows-session": "0.0.0",
+  "modules/weave-linux-display": "0.0.0",
+  "modules/weave-macos-display": "0.0.0",
+  "modules/weave-windows-display": "0.0.0"
 }

@@ -1,0 +1,9 @@
+# Coverage gate for this module: >=95% total, >=90% per package, blocking in
+# CI. The module builds only for Linux, so CI runs it on the Linux runner
+# alone and this is the one profile there is (run with -coverpkg=./...).
+# Paths are relative to this module's root.
+profile: cover-linux.out
+threshold:
+  file: 0
+  package: 90
+  total: 95

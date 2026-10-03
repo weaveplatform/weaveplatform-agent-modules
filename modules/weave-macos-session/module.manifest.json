@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "weave-macos-session",
+  "version": "0.1.0",
+  "protocol": 1,
+  "zone": "A",
+  "privilege": "service",
+  "session": "system",
+  "platforms": [
+    {
+      "os": "darwin",
+      "arch": "arm64"
+    }
+  ],
+  "capabilities": [
+    "hypervisor.channel"
+  ],
+  "address": "weave.session"
+}
