@@ -1,12 +1,279 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "tag-separator": "/",
+  "include-component-in-tag": true,
+  "include-v-in-tag": true,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "initial-version": "0.2.0",
   "packages": {
-    ".": {
+    "sdk": {
+      "component": "sdk",
+      "release-type": "go"
+    },
+    "modules/weave-linux-clipboard": {
+      "component": "modules/weave-linux-clipboard",
       "release-type": "go",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "include-component-in-tag": false,
-      "initial-version": "0.1.0"
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-display": {
+      "component": "modules/weave-linux-display",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-exec": {
+      "component": "modules/weave-linux-exec",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-metrics": {
+      "component": "modules/weave-linux-metrics",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-power": {
+      "component": "modules/weave-linux-power",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-presence": {
+      "component": "modules/weave-linux-presence",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-session": {
+      "component": "modules/weave-linux-session",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-time": {
+      "component": "modules/weave-linux-time",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-clipboard": {
+      "component": "modules/weave-macos-clipboard",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-display": {
+      "component": "modules/weave-macos-display",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-exec": {
+      "component": "modules/weave-macos-exec",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-metrics": {
+      "component": "modules/weave-macos-metrics",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-power": {
+      "component": "modules/weave-macos-power",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-presence": {
+      "component": "modules/weave-macos-presence",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-session": {
+      "component": "modules/weave-macos-session",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-time": {
+      "component": "modules/weave-macos-time",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-clipboard": {
+      "component": "modules/weave-windows-clipboard",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-display": {
+      "component": "modules/weave-windows-display",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-exec": {
+      "component": "modules/weave-windows-exec",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-metrics": {
+      "component": "modules/weave-windows-metrics",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-power": {
+      "component": "modules/weave-windows-power",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-presence": {
+      "component": "modules/weave-windows-presence",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-session": {
+      "component": "modules/weave-windows-session",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-time": {
+      "component": "modules/weave-windows-time",
+      "release-type": "go",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
     }
   }
 }

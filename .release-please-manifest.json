@@ -1,3 +1,27 @@
 {
-  ".": "0.0.0"
+  "sdk": "0.0.0",
+  "modules/weave-linux-clipboard": "0.0.0",
+  "modules/weave-linux-display": "0.0.0",
+  "modules/weave-linux-exec": "0.0.0",
+  "modules/weave-linux-metrics": "0.0.0",
+  "modules/weave-linux-power": "0.0.0",
+  "modules/weave-linux-presence": "0.0.0",
+  "modules/weave-linux-session": "0.0.0",
+  "modules/weave-linux-time": "0.0.0",
+  "modules/weave-macos-clipboard": "0.0.0",
+  "modules/weave-macos-display": "0.0.0",
+  "modules/weave-macos-exec": "0.0.0",
+  "modules/weave-macos-metrics": "0.0.0",
+  "modules/weave-macos-power": "0.0.0",
+  "modules/weave-macos-presence": "0.0.0",
+  "modules/weave-macos-session": "0.0.0",
+  "modules/weave-macos-time": "0.0.0",
+  "modules/weave-windows-clipboard": "0.0.0",
+  "modules/weave-windows-display": "0.0.0",
+  "modules/weave-windows-exec": "0.0.0",
+  "modules/weave-windows-metrics": "0.0.0",
+  "modules/weave-windows-power": "0.0.0",
+  "modules/weave-windows-presence": "0.0.0",
+  "modules/weave-windows-session": "0.0.0",
+  "modules/weave-windows-time": "0.0.0"
 }

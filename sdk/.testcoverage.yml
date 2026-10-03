@@ -1,0 +1,19 @@
+# Coverage gate for the sdk: >=95% total, >=90% per package, blocking in CI.
+# CI merges the unit-test profiles from Linux, macOS and Windows (each run
+# with -coverpkg=./... so a package's code exercised by another package's
+# tests counts) before enforcing it; `make cover` does the same locally with
+# whatever profiles are present. Paths are relative to this module's root.
+profile: cover-linux.out,cover-macos.out,cover-windows.out
+threshold:
+  file: 0
+  package: 90
+  total: 95
+# Generated protobuf is excluded. The tool matches module-relative paths
+# ("gen/go/..."), so a leading-slash pattern alone would never match.
+exclude:
+  paths:
+    - '(^|/)gen/'
+    # The compat fixture's one-line main hands the module to modulesdk.Serve,
+    # which exits the process; the module itself is covered in-process, and
+    # the quality gate's compat job runs the binary under the released core.
+    - '(^|/)internal/compatfixture/main\.go$'

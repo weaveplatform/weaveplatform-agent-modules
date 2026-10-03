@@ -1,0 +1,31 @@
+Virtual-1 "Red Hat, Inc. QEMU Monitor (Virtual-1)"
+  Make: Red Hat, Inc.
+  Model: QEMU Monitor
+  Serial: (null)
+  Physical size: 0x0 mm
+  Enabled: yes
+  Modes:
+    1024x768 px, 60.000000 Hz (preferred)
+    2560x1600 px, 59.987000 Hz (current)
+    1920x1080 px, 60.000000 Hz
+  Position: 0,0
+  Transform: normal
+  Scale: 2.000000
+  Adaptive Sync: disabled
+HDMI-A-1 "Dell Inc. DELL U2720Q 0x1234 (HDMI-A-1)"
+  Make: Dell Inc.
+  Model: DELL U2720Q
+  Serial: 0x1234
+  Physical size: 600x340 mm
+  Enabled: yes
+  Modes:
+    3840x2160 px, 60.000000 Hz (preferred, current)
+    3840x2160 px, 30.000000 Hz
+  Position: 1280,0
+  Transform: normal
+  Scale: 1.500000
+  Adaptive Sync: disabled
+Virtual-2 "Red Hat, Inc. QEMU Monitor (Virtual-2)"
+  Enabled: no
+  Modes:
+    1024x768 px, 60.000000 Hz (preferred)

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "weave-macos-exec",
+  "version": "0.2.0",
+  "protocol": 1,
+  "zone": "A",
+  "privilege": "system",
+  "session": "system",
+  "platforms": [
+    {
+      "os": "darwin",
+      "arch": "arm64"
+    }
+  ],
+  "capabilities": [
+    "hypervisor.channel"
+  ],
+  "address": "weave.exec"
+}

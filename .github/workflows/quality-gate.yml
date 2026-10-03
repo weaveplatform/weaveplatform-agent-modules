@@ -1,11 +1,23 @@
 name: go | Quality gate
 
-# Every pull request passes vet, blocking lint, unit tests on Linux, macOS and
-# Windows, govulncheck, a cross-compile of every cmd/* binary, and the merged
-# coverage gate (>=95% total, >=90% per package). The `gate` job is the
-# single required status check: make it required in branch protection, and
-# add jobs (acceptance against real dependencies in Docker, for example) to
-# its `needs` and to the coverage job as they appear.
+# Every Go module in the workspace (go.work) passes, on each OS it targets:
+# vet, blocking lint, tests with coverage in workspace mode, and a GOWORK=off
+# build and test as a consumer of its released dependencies would see it. Then
+# govulncheck, a cross-compile, a tidiness check, and the per-module coverage
+# gate (each module's .testcoverage.yml over its merged per-OS profiles). The
+# `gate` job is the single required status check.
+#
+# A module under modules/weave-<os>-<capability> builds only for its own OS
+# (every file but doc.go carries that OS's build tag), so it is tested and
+# linted on that OS's runner only, vulnerability-checked as that OS, and
+# cross-compiled for the platforms its module.manifest.json lists. Every other
+# module (sdk/ and packaging/moduledeb) runs on all three, is
+# vulnerability-checked as each, and builds for every guest platform.
+#
+# The sdk carries three more checks of its own: its generated protocol matches
+# agent-core's proto/ at the release named in .github/agent-core-version,
+# neither it nor any module depends on agent-core, and a module built on it
+# runs under that released weave-agent on every OS.
 
 on:
   workflow_dispatch:
@@ -20,17 +32,13 @@ concurrency:
   group: quality-gate-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  GOWORK: 'off'
-
 jobs:
-  unit:
-    name: 'Unit tests (${{ matrix.os }})'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  modules:
+    name: 'Discover modules'
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.discover.outputs.modules }}
+      units: ${{ steps.discover.outputs.units }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -45,26 +53,99 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: 'go.mod'
+          go-version-file: 'go.work'
+          cache: false
+
+      # go.work is the list of modules. A go.mod that never joined it would be
+      # silently skipped here, so that is a failure rather than a gap.
+      - name: Modules from go.work
+        id: discover
+        run: |
+          set -euo pipefail
+          mods=$(go work edit -json | jq -r '.Use[].DiskPath | ltrimstr("./")' | sort)
+          found=$(find . -name go.mod -not -path './tools/*' -not -path './.git/*' -printf '%h\n' | sed 's#^\./##' | sort)
+          missing=$(comm -13 <(printf '%s\n' "$mods") <(printf '%s\n' "$found"))
+          if [ -n "$missing" ]; then
+            echo "::error::modules missing from go.work: $missing"
+            exit 1
+          fi
+          modules=$(printf '%s\n' "$mods" | jq -R . | jq -sc '{include: map(. as $d | {dir: $d, slug: ($d | gsub("/"; "-")),
+            goos: ((($d | capture("^modules/weave-(?<os>linux|macos|windows)-")? | .os) // "")
+              | {linux: "linux", macos: "darwin", windows: "windows", "": ""}[.])})}')
+          units=$(printf '%s\n' "$mods" | jq -R . | jq -sc '{include: [.[] as $d
+            | (($d | capture("^modules/weave-(?<os>linux|macos|windows)-")? | .os) // null) as $only
+            | {linux: "ubuntu-latest", macos: "macos-latest", windows: "windows-latest"} | to_entries[]
+            | select($only == null or .key == $only)
+            | {dir: $d, slug: ($d | gsub("/"; "-")), os: .key, runner: .value}]}')
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+          echo "units=$units" >> "$GITHUB_OUTPUT"
+          echo "modules: $modules"
+          echo "units: $units"
+
+  unit:
+    name: 'Test ${{ matrix.dir }} (${{ matrix.os }})'
+    needs: [modules]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.modules.outputs.units) }}
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        # bash on every OS: PowerShell splits -coverprofile=cover.out at the dot.
+        shell: bash
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: '${{ matrix.dir }}/go.mod'
+          cache-dependency-path: '${{ matrix.dir }}/go.sum'
 
       - name: Vet
         run: go vet ./...
 
-      - name: Unit tests (race, shuffle, coverage)
-        shell: bash
-        run: make test
+      # Workspace mode, as a developer builds: sibling modules resolve to the
+      # local tree. -coverpkg counts code a package's callers exercise.
+      - name: Tests (race, shuffle, coverage)
+        run: go test -race -shuffle=on -count=1 -coverpkg=./... -coverprofile=cover-${{ matrix.os }}.out ./...
 
-      - name: Upload unit coverage
+      # The module alone, against the released versions its go.mod names: what
+      # a consumer and the release build see. A workspace hides a requirement
+      # missing from go.mod; this does not.
+      - name: Standalone build and test (GOWORK=off)
+        env:
+          GOWORK: 'off'
+        run: |
+          go build ./...
+          go test -count=1 ./...
+
+      - name: Upload coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: cover-unit-${{ matrix.os }}
-          path: cover/unit
-          include-hidden-files: true
+          name: cover-${{ matrix.slug }}-${{ matrix.os }}
+          path: ${{ matrix.dir }}/cover-${{ matrix.os }}.out
+          if-no-files-found: error
           retention-days: 7
 
   lint:
-    name: 'Lint (blocking)'
-    runs-on: ubuntu-latest
+    name: 'Lint ${{ matrix.dir }} (${{ matrix.os }})'
+    needs: [modules]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.modules.outputs.units) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOWORK: 'off'
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -79,23 +160,37 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: 'go.mod'
+          go-version-file: '${{ matrix.dir }}/go.mod'
+          cache-dependency-path: '${{ matrix.dir }}/go.sum'
 
       # The linter version lives in a plain file so the deps refresh job can
       # move it without the workflows permission a workflow edit would need.
       - name: Linter version
         id: lintver
+        shell: bash
         run: echo "version=$(tr -d '[:space:]' < .github/golangci-lint-version)" >> "$GITHUB_OUTPUT"
 
+      # Per OS because build tags decide which files exist: the Windows
+      # pseudo-console code is only ever linted on Windows.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: ${{ steps.lintver.outputs.version }}
-          args: --config=.golangci.yml --new=false --fix=false
+          working-directory: ${{ matrix.dir }}
+          args: --config=${{ github.workspace }}/.golangci.yml --new=false --fix=false
 
   vuln:
-    name: 'govulncheck'
+    name: 'govulncheck ${{ matrix.dir }}'
+    needs: [modules]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.modules.outputs.modules) }}
     runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -110,13 +205,73 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: 'go.mod'
+          go-version-file: '${{ matrix.dir }}/go.mod'
+          cache-dependency-path: '${{ matrix.dir }}/go.sum'
 
+      # As the module's own OS when it has one: its code is build-tagged to
+      # that OS, and on any other there would be nothing to check. A module
+      # with no OS of its own (the sdk) has per-OS files, so it is checked as
+      # each of the three.
+      # Built for the runner first: with GOOS set, `go tool` would build
+      # govulncheck itself for the module's OS, which the runner cannot exec.
       - name: govulncheck
-        run: make vuln
+        env:
+          TARGET_GOOS: ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+          (cd "$GITHUB_WORKSPACE/tools" && go build -o "$RUNNER_TEMP/govulncheck" golang.org/x/vuln/cmd/govulncheck)
+          for os in ${TARGET_GOOS:-linux darwin windows}; do
+            echo "== GOOS=$os"
+            GOOS="$os" "$RUNNER_TEMP/govulncheck" ./...
+          done
 
   build:
-    name: 'Cross-compile'
+    name: 'Cross-compile ${{ matrix.dir }}'
+    needs: [modules]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.modules.outputs.modules) }}
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+      CGO_ENABLED: '0'
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: '${{ matrix.dir }}/go.mod'
+          cache-dependency-path: '${{ matrix.dir }}/go.sum'
+
+      # A capability module builds for exactly the platforms its manifest
+      # declares, the same list the release pipeline builds from; the shared
+      # module builds for every guest platform.
+      - name: Build for every platform (CGO disabled)
+        run: |
+          set -euo pipefail
+          platforms="linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64 windows/arm64"
+          if [ -f module.manifest.json ]; then
+            platforms=$(jq -r '.platforms[] | "\(.os)/\(.arch)"' module.manifest.json)
+          fi
+          for p in $platforms; do
+            echo "$p"
+            GOOS=${p%/*} GOARCH=${p#*/} go build ./...
+          done
+
+  tidy:
+    name: 'go.mod and go.work are tidy'
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
@@ -132,14 +287,65 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: 'go.mod'
+          go-version-file: 'go.work'
+          cache: false
 
-      - name: Build every cmd/* binary for every release platform (CGO disabled)
-        run: make build
+      - name: Tidy every module, sync the workspace, expect no change
+        run: |
+          set -euo pipefail
+          for m in $(go work edit -json | jq -r '.Use[].DiskPath') ./tools; do
+            echo "== $m"
+            (cd "$m" && GOWORK=off go mod tidy)
+          done
+          go work sync
+          git diff --exit-code
 
   coverage:
-    name: 'Coverage gate (≥95% total, ≥90% per package)'
-    needs: [unit]
+    name: 'Coverage gate ${{ matrix.dir }} (≥95% total, ≥90% per package)'
+    needs: [modules, unit]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.modules.outputs.modules) }}
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: '${{ matrix.dir }}/go.mod'
+          cache-dependency-path: '${{ matrix.dir }}/go.sum'
+
+      - name: Download this module's per-OS profiles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: cover-${{ matrix.slug }}-*
+          path: ${{ matrix.dir }}
+          merge-multiple: true
+
+      # The module's .testcoverage.yml names one profile per OS it runs on and
+      # its exclusions relative to the module root; a profile that did not
+      # arrive fails the gate rather than shrinking it.
+      - name: Merge and enforce the gate
+        run: |
+          ls -l cover-*.out
+          go tool -modfile="$GITHUB_WORKSPACE/tools/go.mod" go-test-coverage --config=.testcoverage.yml
+
+  sdk-gen:
+    name: 'sdk/gen matches agent-core proto/'
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
@@ -155,21 +361,157 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: 'go.mod'
+          go-version-file: 'sdk/go.mod'
+          cache: false
 
-      - name: Download every coverage directory
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Set up buf
+        uses: bufbuild/buf-action@85aebf73123b5c15fd5528aaecbf9129cddf7fa7 # v1.6.0
         with:
-          pattern: cover-*
-          path: cover
+          setup_only: true
 
-      - name: Merge and enforce the gate
-        run: make cover
+      # The versions agent-core's buf workflow pins, which are the ones
+      # stamped in the committed headers: @latest would fail this check on a
+      # plugin release rather than on a proto change.
+      - name: Install protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
+
+      # buf reads proto/ straight from agent-core's repository at the pinned
+      # tag. status, not diff: a message added upstream shows up as an
+      # untracked file, which `git diff` would not see.
+      - name: Regenerate and check drift
+        run: |
+          set -euo pipefail
+          make sdk-gen
+          if [ -n "$(git status --porcelain -- sdk/gen)" ]; then
+            git status --porcelain -- sdk/gen
+            git diff -- sdk/gen
+            echo "::error::sdk/gen differs from agent-core $(cat .github/agent-core-version) proto/ — run 'make sdk-gen' and commit"
+            exit 1
+          fi
+
+  boundary:
+    name: 'sdk and modules never depend on agent-core'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'sdk/go.mod'
+          cache: false
+
+      # Core and the sdk agree on the wire, not on a Go package: core keeps
+      # its own implementation and the sdk carries its own, and a module sees
+      # only the sdk (Terraform's split: providers import the plugin SDK, never
+      # terraform itself). A stray import would quietly re-couple them, and
+      # go.mod alone would not stop it. -test, because a test-only import is
+      # still a dependency; the sdk as every OS, because it has per-OS files,
+      # and each module as its own OS.
+      - name: Check
+        env:
+          GOWORK: 'off'
+        run: |
+          set -euo pipefail
+          bad=0
+          check() { # <dir> <goos>
+            if (cd "$1" && GOOS=$2 go list -deps -test ./... |
+                grep -E '^github.com/weaveplatform/weaveplatform-agent-core(/|$)'); then
+              echo "::error::$1 (GOOS=$2) depends on agent-core"
+              bad=1
+            fi
+          }
+          for os in linux darwin windows; do check sdk "$os"; done
+          for m in modules/weave-*/; do
+            m=${m%/}
+            case $m in
+              modules/weave-linux-*) check "$m" linux ;;
+              modules/weave-macos-*) check "$m" darwin ;;
+              modules/weave-windows-*) check "$m" windows ;;
+            esac
+          done
+          exit "$bad"
+
+  compat:
+    name: 'sdk module under released weave-agent (${{ matrix.os }})'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, runner: ubuntu-latest}
+          - {os: macos, runner: macos-latest}
+          - {os: windows, runner: windows-latest}
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'sdk/go.mod'
+          cache-dependency-path: 'sdk/go.sum'
+
+      # The release archive for this runner, checked against the release's
+      # checksums before anything in it runs.
+      - name: Download weave-agent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < .github/agent-core-version)
+          goos=$(go env GOOS)
+          goarch=$(go env GOARCH)
+          ext=tar.gz
+          [ "$goos" = windows ] && ext=zip
+          archive="weaveplatform-agent_${version#v}_${goos}_${goarch}.${ext}"
+          sums="weaveplatform-agent_${version#v}_checksums.txt"
+          cd "$RUNNER_TEMP"
+          gh release download "$version" -R weaveplatform/weaveplatform-agent-core -p "$archive" -p "$sums"
+          want=$(awk -v f="$archive" '$2 == f {print $1}' "$sums")
+          got=$( (sha256sum "$archive" 2>/dev/null || shasum -a 256 "$archive") | awk '{print $1}')
+          [ -n "$want" ] && [ "$want" = "$got" ] || { echo "::error::$archive checksum $got, release lists '$want'"; exit 1; }
+          mkdir weave-agent
+          if [ "$ext" = zip ]; then unzip -q "$archive" -d weave-agent; else tar -xzf "$archive" -C weave-agent; fi
+          ls -l weave-agent
+          echo "WEAVE_AGENT_DIR=$RUNNER_TEMP/weave-agent" >> "$GITHUB_ENV"
+
+      # Builds sdk/internal/compatfixture, signs a channel manifest for it
+      # with core's own weavemanifest, runs the released weave-agent against
+      # that channel and waits for weavectl to report the module running and
+      # healthy. See TestUnderReleasedAgent for why a channel and not an OS
+      # code signature.
+      - name: Run the fixture under weave-agent
+        working-directory: sdk
+        env:
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: go test -count=1 -run TestUnderReleasedAgent -v ./internal/compatfixture
 
   gate:
     name: 'Quality gate'
     if: always()
-    needs: [unit, lint, vuln, build, coverage]
+    needs: [modules, unit, lint, vuln, build, tidy, coverage, sdk-gen, boundary, compat]
     runs-on: ubuntu-latest
     steps:
       - name: Every gate job passed
