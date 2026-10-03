@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "weave-linux-metrics",
+  "version": "0.1.0",
+  "protocol": 1,
+  "zone": "A",
+  "privilege": "service",
+  "session": "system",
+  "platforms": [
+    {
+      "os": "linux",
+      "arch": "amd64"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64"
+    }
+  ],
+  "capabilities": [
+    "hypervisor.channel"
+  ],
+  "address": "weave.metrics"
+}

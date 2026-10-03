@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "weave-windows-exec",
+  "version": "0.1.0",
+  "protocol": 1,
+  "zone": "A",
+  "privilege": "system",
+  "session": "system",
+  "platforms": [
+    {
+      "os": "windows",
+      "arch": "amd64"
+    },
+    {
+      "os": "windows",
+      "arch": "arm64"
+    }
+  ],
+  "capabilities": [
+    "hypervisor.channel"
+  ],
+  "address": "weave.exec"
+}

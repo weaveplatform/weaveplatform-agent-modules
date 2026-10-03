@@ -50,6 +50,162 @@
           "jsonpath": "$.version"
         }
       ]
+    },
+    "modules/weave-linux-exec": {
+      "component": "modules/weave-linux-exec",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-exec": {
+      "component": "modules/weave-macos-exec",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-exec": {
+      "component": "modules/weave-windows-exec",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-power": {
+      "component": "modules/weave-linux-power",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-power": {
+      "component": "modules/weave-macos-power",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-power": {
+      "component": "modules/weave-windows-power",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-time": {
+      "component": "modules/weave-linux-time",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-time": {
+      "component": "modules/weave-macos-time",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-time": {
+      "component": "modules/weave-windows-time",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-linux-metrics": {
+      "component": "modules/weave-linux-metrics",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-macos-metrics": {
+      "component": "modules/weave-macos-metrics",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "modules/weave-windows-metrics": {
+      "component": "modules/weave-windows-metrics",
+      "release-type": "go",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "module.manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
     }
   }
 }

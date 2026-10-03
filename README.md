@@ -74,7 +74,20 @@ modules/                   one Go module per capability per OS, each built only 
   weave-linux-presence/    presence for Linux: x/sys/unix, procfs and DMI
   weave-macos-presence/    presence for macOS (arm64): Foundation and IOKit via go-bindings-macosplatform
   weave-windows-presence/  presence for Windows: registry, SMBIOS and system info via go-bindings-win32
-                           (next: exec, power, time, metrics)
+  weave-linux-exec/        exec for Linux and macOS: weaveexec's Unix starter (pipes or a pseudo-terminal)
+  weave-macos-exec/
+  weave-windows-exec/      exec for Windows: weaveexec's Windows starter (pipes or ConPTY)
+  weave-linux-power/       power for Linux and macOS: weavepower's Unix backend (systemctl or shutdown)
+  weave-macos-power/
+  weave-windows-power/     power for Windows: InitiateShutdown via go-bindings-win32
+  weave-linux-time/        time for Linux: clock_settime via x/sys/unix
+  weave-macos-time/        time for macOS: settimeofday via the standard library
+  weave-windows-time/      time for Windows: SetSystemTime via go-bindings-win32
+  weave-linux-metrics/     metrics for Linux: sysinfo, procfs and statfs via x/sys/unix
+  weave-macos-metrics/     metrics for macOS: Mach host statistics, Foundation and libproc via
+                           go-bindings-macosplatform; sysctl and statfs via the standard library
+  weave-windows-metrics/   metrics for Windows: system times, memory status, performance info and
+                           disk space via go-bindings-win32
 tools/                     pinned developer tools (go-test-coverage, govulncheck); not in go.work
 ```
 
