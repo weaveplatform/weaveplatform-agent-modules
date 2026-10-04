@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,9 @@ const EnvAgentDir = "WEAVE_AGENT_DIR"
 // TestUnderReleasedAgent runs the fixture under a real, released core and
 // waits for core itself to report it running and healthy over its control
 // socket: the module side of this sdk against the core side of the protocol,
-// with nothing of either side stubbed.
+// with nothing of either side stubbed. The fixture reports healthy only once
+// core's RegistryService has listed it, so healthy also proves the registry
+// host service and this sdk's client of it agree.
 //
 // A release core verifies every module before exec. It does so with the
 // platform's code signature (codesign with a pinned Apple team, Authenticode
@@ -186,15 +189,22 @@ func signChannel(t *testing.T, tools agentTools, keys, channel, coreVersion, bin
 }
 
 // moduleRow finds id in `weavectl modules` output and returns its STATE and
-// HEALTH columns. HEALTH is last and may contain spaces ("STATUS_DEGRADED
-// (reason)").
+// HEALTH columns, located by the header so a column core adds (v0.9.2 added
+// ADDRESS) does not shift them. HEALTH is last and may contain spaces
+// ("STATUS_DEGRADED (reason)").
 func moduleRow(out, id string) (state, health string, ok bool) {
+	stateCol, healthCol := -1, -1
 	for line := range strings.Lines(out) {
 		f := strings.Fields(line)
-		// MODULE VERSION PROTO STATE PID RESTARTS HEALTH...
-		if len(f) >= 7 && f[0] == id {
-			return f[3], strings.Join(f[6:], " "), true
+		if len(f) > 0 && f[0] == "MODULE" {
+			stateCol = slices.Index(f, "STATE")
+			healthCol = slices.Index(f, "HEALTH")
+			continue
 		}
+		if stateCol < 0 || healthCol < 0 || len(f) <= healthCol || f[0] != id {
+			continue
+		}
+		return f[stateCol], strings.Join(f[healthCol:], " "), true
 	}
 	return "", "", false
 }
