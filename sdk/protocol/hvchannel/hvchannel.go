@@ -49,10 +49,20 @@ var ErrFrameTooLarge = errors.New("hvchannel: frame too large")
 // Data is deliberately opaque here: the feature vocabulary that fills it (the
 // guestwire kinds) is product logic and lives with the modules, not in the
 // platform API.
+//
+// ID is an optional correlation the sender chooses. Core never reads Data, so
+// a reply core makes on a module's behalf — delivery.failed — can only be
+// matched to the host's pending call by something outside Data: core echoes
+// ID on every control reply to a frame that carried one. It is omitted when
+// empty, so a peer built before it existed neither sends nor sees it, and a
+// decoder that does not know the field ignores it. A host sets it to the
+// request id inside Data (weavewire.Command.ID), so one pending-call table
+// matches both a module's reply and core's answer on its behalf.
 type Envelope struct {
 	Module string `json:"module"`
 	Kind   string `json:"kind"`
 	Data   []byte `json:"data,omitempty"`
+	ID     string `json:"id,omitempty"`
 }
 
 // WriteFrame writes one length-prefixed frame: 4-byte big-endian length, then

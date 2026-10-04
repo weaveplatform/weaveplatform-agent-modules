@@ -60,9 +60,10 @@ module claims their addresses; each gets its ops when its modules are written.
 
 Clipboard and display run in the session of the user at the physical console. With nobody
 logged in there, core holds those modules in `waiting-for-session`, and `weaveclient`
-reports a call to them as `weaveclient.ErrNoSession` after `Options.SessionTimeout`.
-Session runs as system and always answers, so `SessionCurrent` tells "nobody is logged
-in" from "no module installed".
+reports a call to them as `weaveclient.ErrNoSession`: at once under weave-agent v0.9.2 and
+later, which says why it could not deliver the call, and after `Options.SessionTimeout`
+under an older core, which says nothing. Session runs as system and always answers, so
+`SessionCurrent` tells "nobody is logged in" from "no module installed".
 
 ### Host side
 
@@ -73,6 +74,17 @@ client := weaveclient.New(ctx, conn, weaveclient.Options{})
 _ = client.Authenticate(ctx, channelKey)      // the machine's channel key; hello works before this
 inv, _ := client.Inventory(ctx)               // → weave.presence
 s, _ := client.Exec(ctx, weavewire.ExecRequest{Argv: []string{"uname", "-a"}})
+
+// Which modules the guest has (weave-agent v0.9.2 and later): ask once, follow changes,
+// and gate on the cached copy. An older core never answers: ErrRegistryUnsupported.
+_, _ = client.Modules(ctx)
+client.OnModulesChanged(func(s weaveclient.ModulesSnapshot) { /* revision only rises */ })
+if client.Installed(weavewire.Clipboard.Address()) { /* ... */ }
+
+// A call core cannot deliver fails at once, saying why, instead of timing out.
+if _, err := client.Shutdown(ctx, "bye"); errors.Is(err, weaveclient.ErrModuleNotInstalled) {
+	// no power module in this guest
+}
 ```
 
 ## Layout
@@ -87,7 +99,7 @@ sdk/                       github.com/weaveplatform/weaveplatform-agent-modules/
   weavewire/               capability names and addresses, op kinds, payloads, stream chunks
   weavemodule/             the capability runtime: one Service per module, parity and manifest checks
   weaveagent/              dispatch and event emission under weavemodule
-  weaveclient/             the host client: typed calls, exec sessions, auth, pluggable transport
+  weaveclient/             the host client: typed calls, exec sessions, auth, the module registry, pluggable transport
   weave<capability>/       the OS-neutral service for each capability; a module supplies its OS backend
   weavepolicy/             exec policy and audit records
   internal/compatfixture/  the module CI runs under the released weave-agent
