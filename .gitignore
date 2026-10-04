@@ -4,7 +4,8 @@
 # what `go build ./...` leaves in a capability module's directory
 /modules/*/weave-*
 /packaging/moduledeb/moduledeb
-# make debs
+/packaging/modulepkg/modulepkg
+# make debs, make pkgs
 /dist/
 *.exe
 *.exe~

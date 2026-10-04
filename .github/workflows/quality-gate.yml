@@ -11,7 +11,7 @@ name: go | Quality gate
 # (every file but doc.go carries that OS's build tag), so it is tested and
 # linted on that OS's runner only, vulnerability-checked as that OS, and
 # cross-compiled for the platforms its module.manifest.json lists. Every other
-# module (sdk/ and packaging/moduledeb) runs on all three, is
+# module (sdk/ and the packaging tools) runs on all three, is
 # vulnerability-checked as each, and builds for every guest platform.
 #
 # The sdk carries three more checks of its own: its generated protocol matches

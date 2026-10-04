@@ -29,5 +29,6 @@ use (
 	./modules/weave-windows-session
 	./modules/weave-windows-time
 	./packaging/moduledeb
+	./packaging/modulepkg
 	./sdk
 )

@@ -90,7 +90,7 @@ if _, err := client.Shutdown(ctx, "bye"); errors.Is(err, weaveclient.ErrModuleNo
 ## Layout
 
 ```
-go.work                    the workspace: sdk, every module and packaging/moduledeb (committed)
+go.work                    the workspace: sdk, every module and the packaging tools (committed)
 sdk/                       github.com/weaveplatform/weaveplatform-agent-modules/sdk
   modulesdk/ testkit/      the module runtime (Serve) and StubCore, a stand-in core for a built binary
   protocol/                handshake, ipc, hvchannel framing, manifest types: the hand-written wire
@@ -107,6 +107,7 @@ sdk/                       github.com/weaveplatform/weaveplatform-agent-modules/
 modules/weave-<os>-<capability>/
                            one Go module per capability per OS, built only for its OS
 packaging/moduledeb/       turns a built Linux module into a .deb for local bring-up
+packaging/modulepkg/       turns a built macOS module into a .pkg for local bring-up
 tools/                     pinned developer tools (go-test-coverage, govulncheck); not in go.work
 docs/decisions/            ADR 0001 (capability modules per OS), ADR 0002 (the sdk and the Terraform model)
 ```
@@ -223,6 +224,58 @@ this works on macOS with no Debian tooling.
 Core's `packaging/apt` builds the `weave-agent` package and the signed apt repository. Put
 the module packages from `dist/` beside the `weave-agent` package and build one repository
 from them, and a guest installs core and its modules from it with `apt-get install`.
+
+### macOS
+
+The macOS counterpart builds installer packages of the macOS modules, for a guest running
+core's `weave-agent` package (agent-core
+[`docs/macos-package.md`](https://github.com/weaveplatform/weaveplatform-agent-core/blob/main/docs/macos-package.md)).
+It runs on macOS, since it needs `pkgbuild`:
+
+```
+make pkgs MODULES="weave-macos-presence weave-macos-exec"
+```
+
+Each module is built as the release pipeline builds it and packaged by
+[`packaging/modulepkg`](packaging/modulepkg) into `dist/<id>_<version>_darwin_arm64.pkg`, a
+flat component package with the identifier `run.weaveplatform.module.<id>`:
+
+| Path | What | Owner, mode |
+|---|---|---|
+| `/usr/local/libexec/weave/modules/<id>/<id>` | the module binary: the path core's macOS layout runs | root:wheel 0755 |
+| `/usr/local/libexec/weave/modules/<id>/module.manifest.json` | its manifest | root:wheel 0644 |
+| `/usr/local/libexec/weave/uninstall.d/<id>.sh` | its uninstaller | root:wheel 0755 |
+
+Every directory in the payload is root:wheel 0755, the mode macOS and core's package already
+give the ones that exist, because installer applies a payload directory's mode to an
+existing one. Install one in the guest with
+`sudo installer -pkg <id>_<version>_darwin_arm64.pkg -target /`. The package is not signed;
+`PKG_ARCH` is `arm64` unless set, and `modulepkg` refuses a manifest that does not declare
+`darwin/<arch>`.
+
+- **postinstall** runs `launchctl kill HUP system/run.weaveplatform.agent` when that daemon
+  is loaded, so weave-agent starts or replaces the module at once. It does nothing when the
+  daemon is not loaded or the package is installed onto another volume (an image build),
+  and it never fails the install. weave-agent's kqueue watch on its modules directory and
+  its minute rescan cover those cases.
+- **Removal.** macOS has no package removal, so the package carries its own uninstaller:
+  `sudo /usr/local/libexec/weave/uninstall.d/<id>.sh` removes the binary and manifest, the
+  module directory if nothing else is in it, the uninstaller itself and the package
+  receipt (`pkgutil --forget run.weaveplatform.module.<id>`), then sends the same reload
+  so weave-agent stops the module at once. `WEAVE_PKG_DRYRUN=1` prints what it would do.
+
+The scripts are in [`packaging/modulepkg/scripts`](packaging/modulepkg/scripts). Check a
+build without installing it:
+
+```
+pkgutil --payload-files dist/weave-macos-exec_*_darwin_arm64.pkg
+pkgutil --expand dist/weave-macos-exec_*_darwin_arm64.pkg /tmp/x && lsbom -p MUGf /tmp/x/Bom
+WEAVE_PKG_DRYRUN=1 sh packaging/modulepkg/scripts/postinstall pkg / /   # prints, changes nothing
+```
+
+A package built on a Mac whose shell tags new files with `com.apple.provenance` lists
+`._*` entries in its payload. Those are the build machine's extended attributes, which
+installer restores as attributes rather than files, as with core's own package.
 
 ## Contributing
 

@@ -124,6 +124,31 @@ debs:
 			-manifest $$dir/module.manifest.json -arch $(ARCH) -out $(DIST); \
 	done
 
+# Local bring-up on macOS: module installer packages, the counterpart of debs,
+# for a guest running core's weave-agent package (agent-core
+# docs/macos-package.md). Built the way module-release.yml builds a module, then
+# packaged by packaging/modulepkg with pkgbuild, so this runs on macOS only.
+# Core verifies a module's code signature before it launches it; the binary is
+# packaged as built, so sign it first wherever core requires one.
+PKG_ARCH ?= arm64
+PKG_MODULES ?= $(filter weave-macos-%,$(notdir $(WORKSPACE)))
+MODULEPKG := $(ROOT)/.bin/modulepkg
+
+## pkgs: macOS module .pkgs in dist/ (MODULES="weave-macos-presence ..."; default all; PKG_ARCH=arm64)
+pkgs:
+	@mkdir -p $(ROOT)/.bin $(DIST)/.build
+	cd packaging/modulepkg && GOWORK=off $(GO) build -o $(MODULEPKG) .
+	@set -e; for id in $(if $(filter command line environment,$(origin MODULES)),$(MODULES),$(PKG_MODULES)); do \
+		case $$id in weave-macos-*) ;; *) echo "$$id is not a macOS module"; exit 1;; esac; \
+		dir=$(ROOT)/modules/$$id; \
+		[ -f $$dir/module.manifest.json ] || { echo "no module $$id under modules/"; exit 1; }; \
+		echo "== $$id darwin/$(PKG_ARCH)"; \
+		(cd $$dir && CGO_ENABLED=0 GOOS=darwin GOARCH=$(PKG_ARCH) GOWORK=off \
+			$(GO) build -trimpath -o $(DIST)/.build/$$id-darwin-$(PKG_ARCH) .); \
+		$(MODULEPKG) -binary $(DIST)/.build/$$id-darwin-$(PKG_ARCH) \
+			-manifest $$dir/module.manifest.json -arch $(PKG_ARCH) -out $(DIST); \
+	done
+
 ## clean: remove coverage profiles and dist/
 clean:
 	@for m in $(WORKSPACE); do rm -f $$m/cover-*.out; done
@@ -132,4 +157,4 @@ clean:
 ## gate: everything CI runs, in order
 gate: vet-all-os lint test standalone cover vuln
 
-.PHONY: help modules test standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat debs clean gate
+.PHONY: help modules test standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat debs pkgs clean gate

@@ -1,0 +1,37 @@
+#!/bin/sh
+# postinstall of a weave module package, written by packaging/modulepkg.
+#
+# installer runs this as root with $1 the package, $2 the install location
+# and $3 the target volume. It tells a running weave-agent to reload its
+# modules, so the module this package installed or upgraded starts at once.
+# weave-agent also watches its modules directory (kqueue) and rescans it every
+# minute; this makes the reload explicit and immediate. It never fails the
+# install: the module is in place whether or not the reload lands.
+#
+# WEAVE_PKG_DRYRUN=1 prints the reload instead of sending it; the check that
+# the daemon is loaded still runs (it only reads). LAUNCHCTL names the tool,
+# so a test can stand in for it.
+set -u
+
+LABEL=run.weaveplatform.agent
+LAUNCHCTL=${LAUNCHCTL:-/bin/launchctl}
+target=${3:-/}
+
+# Only a loaded daemon can take a signal: with core not installed yet, or not
+# running, there is nothing to tell, and its first pass finds the module.
+reload_weave_agent() {
+	"$LAUNCHCTL" print "system/$LABEL" >/dev/null 2>&1 || return 0
+	if [ -n "${WEAVE_PKG_DRYRUN:-}" ]; then
+		echo "+ $LAUNCHCTL kill HUP system/$LABEL"
+		return 0
+	fi
+	"$LAUNCHCTL" kill HUP "system/$LABEL" >/dev/null 2>&1 || true
+}
+
+# Installed onto a volume that is not the running system (an image being
+# built): this system's launchd runs a different core, if any. The module is
+# picked up when that volume boots.
+if [ "$target" = / ]; then
+	reload_weave_agent
+fi
+exit 0
