@@ -51,13 +51,15 @@ const (
 
 // ClipboardFormat names one representation of clipboard content. The values
 // are MIME-shaped and OS-neutral: each backend translates them to its native
-// types (UTIs on macOS, X11/Wayland targets on Linux, CF_* and registered
-// formats on Windows) and leaves out what it cannot map.
+// types (UTIs on macOS, X11 and Wayland targets on Linux, CF_* and registered
+// formats on Windows).
 type ClipboardFormat string
 
-// The formats every backend understands. A host may send others; a backend
-// that cannot represent one leaves it out of what it writes, and says so in
-// ClipboardSetResponse.Written.
+// The canonical formats: the one vocabulary every guest OS speaks. Every
+// backend maps each of them to a native name and holds all of them; one it
+// cannot hold is reported in ClipboardStatResponse.Support, never dropped
+// silently. A host may send other formats; a set leaves them out and lists
+// them in ClipboardSetResponse.Unwritten.
 const (
 	// ClipboardText is UTF-8 text, whatever the OS's native encoding.
 	ClipboardText ClipboardFormat = "text/plain"
@@ -74,14 +76,40 @@ const (
 	ClipboardFiles ClipboardFormat = "files"
 )
 
-// ClipboardFormats lists the formats every backend understands, richest
-// first, so a host that wants one representation can take the first it
-// supports.
+// ClipboardFormats lists the canonical formats, richest first, so a host that
+// wants one representation can take the first it supports, and a backend that
+// holds only one per set keeps the richest.
 func ClipboardFormats() []ClipboardFormat {
 	return []ClipboardFormat{
 		ClipboardFiles, ClipboardPNG, ClipboardTIFF, ClipboardPDF,
 		ClipboardRTF, ClipboardHTML, ClipboardText,
 	}
+}
+
+// IsClipboardFormat reports whether f is one of the canonical formats.
+func IsClipboardFormat(f ClipboardFormat) bool {
+	switch f {
+	case ClipboardText, ClipboardHTML, ClipboardRTF, ClipboardPNG,
+		ClipboardTIFF, ClipboardPDF, ClipboardFiles:
+		return true
+	}
+	return false
+}
+
+// ClipboardFormatSupport says how a guest holds one canonical format.
+type ClipboardFormatSupport struct {
+	Format ClipboardFormat `json:"format"`
+	// Held reports that the guest can hold the format. When it cannot, a set
+	// leaves it out and lists it in Unwritten, and Reason says why.
+	Held bool `json:"held"`
+	// Native is the OS's name for the format: a UTI on macOS, an X11 target
+	// or MIME type on Linux, a clipboard format name on Windows.
+	Native string `json:"native,omitempty"`
+	// Private marks a format the OS has no shared slot for, held under a
+	// name of weave's own (PDF on Windows). It round-trips host to guest to
+	// host, but most guest applications will neither paste nor copy it.
+	Private bool   `json:"private,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // ClipboardFormatInfo is one format on offer, as stat reports it.
@@ -103,6 +131,18 @@ type ClipboardStatResponse struct {
 	// session starts a new module).
 	ChangeToken uint64                `json:"change_token"`
 	Formats     []ClipboardFormatInfo `json:"formats,omitempty"`
+	// Support lists every canonical format once, in ClipboardFormats order,
+	// with whether and how this guest holds it: what a set can carry, not
+	// what the clipboard holds now. Empty from a module older than the field.
+	Support []ClipboardFormatSupport `json:"support,omitempty"`
+	// SingleRepresentation reports a clipboard that holds one representation
+	// per set (Linux through wl-copy, on a compositor without a data-control
+	// protocol): a set keeps the richest it can hold and lists the rest in
+	// Unwritten. Limitation says why.
+	SingleRepresentation bool `json:"single_representation,omitempty"`
+	// Limitation describes, for an operator, anything that keeps this
+	// guest's clipboard from holding every canonical format at once.
+	Limitation string `json:"limitation,omitempty"`
 }
 
 // ClipboardItem is one representation: in a get's reply, one the guest read;
@@ -155,7 +195,9 @@ type ClipboardGetResponse struct {
 // ClipboardSetRequest replaces the clipboard. Every item is a representation
 // of the same content (text and its HTML, say); together they become one
 // clipboard entry, or a backend that holds only one representation at a time
-// writes the richest it can.
+// (ClipboardStatResponse.SingleRepresentation) writes the richest it can. A
+// set none of whose formats the guest can hold is refused as unsupported
+// (CodeUnsupported) and leaves the clipboard as it was.
 type ClipboardSetRequest struct {
 	Items []ClipboardItem `json:"items"`
 	// TransferID names content uploaded beforehand as KindClipboardUpload
@@ -172,6 +214,11 @@ type ClipboardSetResponse struct {
 	// and copy it straight back.
 	ChangeToken uint64 `json:"change_token"`
 	// Written are the formats the OS accepted, which may be fewer than were
-	// sent: a Linux clipboard tool holds one representation per copy.
+	// sent.
 	Written []ClipboardFormat `json:"written,omitempty"`
+	// Unwritten are the formats that were sent and not written, each once,
+	// in the order they were sent: a format the guest does not hold, or one
+	// a single-representation clipboard dropped for a richer one. A host
+	// reports them rather than assume the guest holds what it sent.
+	Unwritten []ClipboardFormat `json:"unwritten,omitempty"`
 }

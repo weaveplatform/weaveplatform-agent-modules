@@ -71,7 +71,10 @@ var (
 // binding's NSAutoreleasePool wrapper: that wrapper releases its object from a
 // finalizer, and -drain has already released and freed it, so the finalizer
 // would release freed memory.
-func (c *clipboard) do(fn func(pb *appkit.Pasteboard) error) error {
+//
+// With no pasteboard to reach — the module started outside a GUI session — the
+// op is unsupported rather than failed: there is no clipboard here to sync.
+func (c *clipboard) do(kind string, fn func(pb *appkit.Pasteboard) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	runtime.LockOSThread()
@@ -84,7 +87,20 @@ func (c *clipboard) do(fn func(pb *appkit.Pasteboard) error) error {
 	})
 	pool := poolClass.Send(selNew)
 	defer pool.Send(selDrain)
-	return fn(c.board())
+	pb := c.board()
+	if pb == nil {
+		return &weavewire.UnsupportedError{
+			Kind:   kind,
+			Reason: "no pasteboard server: the module is not running in the console user's GUI session",
+		}
+	}
+	return fn(pb)
+}
+
+// Support reports that the pasteboard holds every canonical format at once,
+// each under its UTI.
+func (c *clipboard) Support() weaveclipboard.Support {
+	return weaveclipboard.CanonicalSupport(utis)
 }
 
 func uti(f weavewire.ClipboardFormat) obj.Object {
@@ -140,7 +156,7 @@ func fileURLPath(s string) (string, bool) {
 // copied it, and asking for its size would make that application render it.
 func (c *clipboard) Stat(context.Context) (weavewire.ClipboardStatResponse, error) {
 	var resp weavewire.ClipboardStatResponse
-	err := c.do(func(pb *appkit.Pasteboard) error {
+	err := c.do(weavewire.KindClipboardStat, func(pb *appkit.Pasteboard) error {
 		resp.ChangeToken = token(pb.ChangeCount())
 		for _, f := range offered(pb) {
 			info := weavewire.ClipboardFormatInfo{Format: f}
@@ -182,7 +198,7 @@ func (c *clipboard) Read(
 	maxBytes int64,
 ) (weaveclipboard.Contents, error) {
 	var out weaveclipboard.Contents
-	err := c.do(func(pb *appkit.Pasteboard) error {
+	err := c.do(weavewire.KindClipboardGet, func(pb *appkit.Pasteboard) error {
 		for range readAttempts {
 			before := pb.ChangeCount()
 			out = weaveclipboard.Contents{ChangeToken: token(before)}
@@ -227,7 +243,7 @@ func (c *clipboard) Write(
 			return resp, err
 		}
 	}
-	err := c.do(func(pb *appkit.Pasteboard) error {
+	err := c.do(weavewire.KindClipboardSet, func(pb *appkit.Pasteboard) error {
 		pb.ClearContents()
 		if len(paths) > 0 {
 			objects := make([]obj.Object, 0, len(paths))

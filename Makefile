@@ -47,6 +47,19 @@ modules:
 test:
 	$(call each_host_module,$(GO) test -race -shuffle=on -count=1 -coverpkg=./... -coverprofile=cover-$(COVER_OS).out ./...)
 
+# weave-linux-clipboard's tests start Xvfb themselves where it is installed,
+# and skip the X11 checks where it is not, which leaves the module under its
+# coverage gate. This runs them in Docker, as an ordinary user, against Xvfb,
+# xclip and wl-clipboard, and a headless Sway for Wayland data control.
+LINUX_CLIPBOARD_IMAGE := weave-linux-clipboard-test
+
+## test-linux-clipboard: weave-linux-clipboard's tests in Docker against Xvfb, xclip, wl-clipboard and a headless Sway
+test-linux-clipboard:
+	docker build -q -t $(LINUX_CLIPBOARD_IMAGE) --build-arg GO_VERSION=$$(sed -n 's/^go //p' go.work) \
+		modules/weave-linux-clipboard/testdata
+	docker run --rm -v $(ROOT):/src -w /src/modules/weave-linux-clipboard -e GOFLAGS=-buildvcs=false \
+		$(LINUX_CLIPBOARD_IMAGE) testdata/run.sh -race -shuffle=on -count=1 -coverpkg=./... -coverprofile=cover-linux.out
+
 ## standalone: build and test every module with GOWORK=off, as a consumer would
 standalone:
 	$(call each_host_module,GOWORK=off $(GO) build ./... && GOWORK=off $(GO) test -count=1 ./...)
@@ -124,6 +137,31 @@ debs:
 			-manifest $$dir/module.manifest.json -arch $(ARCH) -out $(DIST); \
 	done
 
+# Local bring-up on macOS: module installer packages, the counterpart of debs,
+# for a guest running core's weave-agent package (agent-core
+# docs/macos-package.md). Built the way module-release.yml builds a module, then
+# packaged by packaging/modulepkg with pkgbuild, so this runs on macOS only.
+# Core verifies a module's code signature before it launches it; the binary is
+# packaged as built, so sign it first wherever core requires one.
+PKG_ARCH ?= arm64
+PKG_MODULES ?= $(filter weave-macos-%,$(notdir $(WORKSPACE)))
+MODULEPKG := $(ROOT)/.bin/modulepkg
+
+## pkgs: macOS module .pkgs in dist/ (MODULES="weave-macos-presence ..."; default all; PKG_ARCH=arm64)
+pkgs:
+	@mkdir -p $(ROOT)/.bin $(DIST)/.build
+	cd packaging/modulepkg && GOWORK=off $(GO) build -o $(MODULEPKG) .
+	@set -e; for id in $(if $(filter command line environment,$(origin MODULES)),$(MODULES),$(PKG_MODULES)); do \
+		case $$id in weave-macos-*) ;; *) echo "$$id is not a macOS module"; exit 1;; esac; \
+		dir=$(ROOT)/modules/$$id; \
+		[ -f $$dir/module.manifest.json ] || { echo "no module $$id under modules/"; exit 1; }; \
+		echo "== $$id darwin/$(PKG_ARCH)"; \
+		(cd $$dir && CGO_ENABLED=0 GOOS=darwin GOARCH=$(PKG_ARCH) GOWORK=off \
+			$(GO) build -trimpath -o $(DIST)/.build/$$id-darwin-$(PKG_ARCH) .); \
+		$(MODULEPKG) -binary $(DIST)/.build/$$id-darwin-$(PKG_ARCH) \
+			-manifest $$dir/module.manifest.json -arch $(PKG_ARCH) -out $(DIST); \
+	done
+
 ## clean: remove coverage profiles and dist/
 clean:
 	@for m in $(WORKSPACE); do rm -f $$m/cover-*.out; done
@@ -132,4 +170,4 @@ clean:
 ## gate: everything CI runs, in order
 gate: vet-all-os lint test standalone cover vuln
 
-.PHONY: help modules test standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat debs clean gate
+.PHONY: help modules test test-linux-clipboard standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat debs pkgs clean gate

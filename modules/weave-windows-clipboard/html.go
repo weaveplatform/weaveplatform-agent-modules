@@ -19,22 +19,50 @@ import (
 // The offsets count from the start of the header. The other OSes carry bare
 // HTML, so the header is removed on read and added on write.
 
-// fromCFHTML returns the HTML document a CF_HTML block carries: from
-// StartHTML to EndHTML, or the fragment when an application gave no document
-// (StartHTML of -1, which the format allows). A block whose offsets do not fit
-// it is cut at the end of its header instead, so a wrong offset costs the
-// precision of the cut, not the content.
+// The comments CF_HTML wraps the copied fragment in.
+const (
+	startMarker = "<!--StartFragment-->"
+	endMarker   = "<!--EndFragment-->"
+)
+
+// fromCFHTML returns the HTML a CF_HTML block carries: the fragment, which is
+// what was copied and what the other OSes carry as bare HTML, so HTML written
+// here reads back byte for byte.
+//
+// The offsets are byte offsets from the start of the header, which may end
+// its lines in CRLF or LF. Applications get them slightly wrong — Office and
+// browsers have both shipped EndFragment offsets a few bytes past the end
+// marker — so the fragment offsets are trusted only when they fit the block
+// and, where the block has the fragment markers, sit right against them.
+// Otherwise the markers say where the fragment is. Failing both, the document
+// from StartHTML to EndHTML is returned, and failing that the block from its
+// first tag: a wrong offset costs the precision of the cut, not the content.
 func fromCFHTML(raw []byte) string {
 	s := string(trimNUL(raw))
 	if !strings.HasPrefix(s, "Version:") {
 		return s
 	}
 	h := header(s)
-	start, end := h["StartHTML"], h["EndHTML"]
-	if start < 0 {
-		start, end = h["StartFragment"], h["EndFragment"]
+	start, end := h["StartFragment"], h["EndFragment"]
+	fits := start > 0 && start <= end && end <= len(s)
+	ms := strings.Index(s, startMarker)
+	me := -1
+	if ms >= 0 {
+		if i := strings.Index(s[ms+len(startMarker):], endMarker); i >= 0 {
+			me = ms + len(startMarker) + i
+		}
 	}
-	if start > 0 && start <= end && end <= len(s) {
+	switch {
+	case fits && me < 0:
+		return s[start:end] // no markers to check the offsets against
+	case fits && strings.HasSuffix(s[:start], startMarker) && strings.HasPrefix(s[end:], endMarker):
+		// Offsets that sit against the markers win over a search for them,
+		// which a fragment that quotes the end marker itself would fool.
+		return s[start:end]
+	case me >= 0:
+		return s[ms+len(startMarker) : me]
+	}
+	if start, end := h["StartHTML"], h["EndHTML"]; start > 0 && start <= end && end <= len(s) {
 		return s[start:end]
 	}
 	if i := strings.Index(s, "<"); i >= 0 {
@@ -65,8 +93,8 @@ const cfHTMLHeader = "Version:0.9\r\nStartHTML:%010d\r\nEndHTML:%010d\r\n" +
 	"StartFragment:%010d\r\nEndFragment:%010d\r\n"
 
 const (
-	fragmentStart = "<html><body><!--StartFragment-->"
-	fragmentEnd   = "<!--EndFragment--></body></html>"
+	fragmentStart = "<html><body>" + startMarker
+	fragmentEnd   = endMarker + "</body></html>"
 )
 
 // toCFHTML wraps HTML as the fragment of a CF_HTML document, which is what

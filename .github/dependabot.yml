@@ -48,6 +48,7 @@ updates:
       - "/modules/weave-windows-session"
       - "/modules/weave-windows-time"
       - "/packaging/moduledeb"
+      - "/packaging/modulepkg"
       - "/tools"
     schedule:
       interval: "daily"

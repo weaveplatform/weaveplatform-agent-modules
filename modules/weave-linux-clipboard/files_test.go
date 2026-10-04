@@ -3,9 +3,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
@@ -99,11 +102,13 @@ func TestSplitLines(t *testing.T) {
 	}
 }
 
-func TestRichest(t *testing.T) {
+// A single-representation clipboard keeps the richest canonical format of a
+// set; a set of none is unsupported.
+func TestSingleKeepsTheRichest(t *testing.T) {
 	items := func(fs ...weavewire.ClipboardFormat) []weavewire.ClipboardItem {
 		out := make([]weavewire.ClipboardItem, 0, len(fs))
 		for _, f := range fs {
-			out = append(out, weavewire.ClipboardItem{Format: f})
+			out = append(out, weavewire.ClipboardItem{Format: f, Name: "f"})
 		}
 		return out
 	}
@@ -116,9 +121,24 @@ func TestRichest(t *testing.T) {
 		"tiff":         {items(weavewire.ClipboardTIFF, weavewire.ClipboardHTML), weavewire.ClipboardTIFF},
 		"none":         {items("x/unknown"), ""},
 	} {
-		got, ok := richest(tc.in)
-		if got != tc.want || ok != (tc.want != "") {
-			t.Errorf("%s: %q %v, want %q", name, got, ok, tc.want)
+		m := &memMech{label: "wl-copy", one: true}
+		res, err := withMech(m).Write(context.Background(), tc.in)
+		if tc.want == "" {
+			if _, ok := errors.AsType[*weavewire.UnsupportedError](err); !ok {
+				t.Errorf("%s: err = %v, want unsupported", name, err)
+			}
+			continue
+		}
+		if err != nil || !slices.Equal(res.Written, []weavewire.ClipboardFormat{tc.want}) ||
+			len(m.offers) != 1 {
+			t.Errorf(
+				"%s: %+v, %v, offers %d; want %s alone",
+				name,
+				res,
+				err,
+				len(m.offers),
+				tc.want,
+			)
 		}
 	}
 }
@@ -188,5 +208,40 @@ func TestStagerReportsAStagingFailure(t *testing.T) {
 		if _, err := (&stager{root: ro}).files(item); err == nil {
 			t.Error("staged into a read-only directory")
 		}
+	}
+}
+
+// The two staging steps that fail only on a filesystem's say-so: clearing a
+// copy whose files cannot be removed, and writing a file the filesystem
+// refuses the name of.
+func TestStagerReportsEachFilesystemRefusal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes and writes what these refusals rely on")
+	}
+	root := t.TempDir()
+	stuck := filepath.Join(root, "0", "sub")
+	if err := os.MkdirAll(stuck, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stuck, "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stuck, 0o700) })
+	item := []weavewire.ClipboardItem{
+		{Format: weavewire.ClipboardFiles, Name: "a", Data: []byte("x")},
+	}
+	if _, err := (&stager{root: root}).files(item); err == nil ||
+		!strings.Contains(err.Error(), "clearing") {
+		t.Errorf("clearing a stuck copy: %v", err)
+	}
+
+	long := []weavewire.ClipboardItem{
+		{Format: weavewire.ClipboardFiles, Name: strings.Repeat("n", 300)},
+	}
+	if _, err := (&stager{root: t.TempDir()}).files(long); err == nil {
+		t.Error("staged a file whose name is too long")
 	}
 }

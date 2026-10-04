@@ -1,0 +1,9 @@
+# Coverage gate for modulepkg: >=95% total, >=90% per package, blocking in CI.
+# It builds everywhere, so CI merges its Linux, macOS and Windows profiles
+# (each run with -coverpkg=./...) before enforcing it. Paths are relative to
+# this module's root.
+profile: cover-linux.out,cover-macos.out,cover-windows.out
+threshold:
+  file: 0
+  package: 90
+  total: 95

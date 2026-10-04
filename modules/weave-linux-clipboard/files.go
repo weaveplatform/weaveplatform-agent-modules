@@ -42,11 +42,14 @@ func parseURIList(data []byte) []string {
 func uriList(paths []string) []byte {
 	var b strings.Builder
 	for _, p := range paths {
-		b.WriteString((&url.URL{Scheme: "file", Path: p}).String())
+		b.WriteString(fileURI(p))
 		b.WriteString("\r\n")
 	}
 	return []byte(b.String())
 }
+
+// fileURI is the file:// URI of a local path.
+func fileURI(p string) string { return (&url.URL{Scheme: "file", Path: p}).String() }
 
 var errBadName = errors.New("not a file name")
 

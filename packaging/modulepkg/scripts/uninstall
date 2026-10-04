@@ -1,0 +1,71 @@
+#!/bin/sh
+# Remove the @ID@ module from this Mac, written by packaging/modulepkg:
+#
+#   sudo /usr/local/libexec/weave/uninstall.d/@ID@.sh
+#
+# macOS has no package removal, so each module package installs this script
+# beside core's own uninstaller. It removes what the package put down, forgets
+# the package receipt and then tells a running weave-agent to reload, which
+# stops the module at once (the counterpart of the Debian packages' postrm).
+# The reload never fails the removal.
+#
+# WEAVE_PKG_DRYRUN=1 prints what would be done instead. LAUNCHCTL and PKGUTIL
+# name the tools, so a test can stand in for them.
+set -eu
+
+ID=@ID@
+PKGID=@PKGID@
+LABEL=run.weaveplatform.agent
+LIBEXEC=/usr/local/libexec/weave
+MODULE=$LIBEXEC/modules/$ID
+UNINSTALLERS=$LIBEXEC/uninstall.d
+LAUNCHCTL=${LAUNCHCTL:-/bin/launchctl}
+PKGUTIL=${PKGUTIL:-/usr/sbin/pkgutil}
+DRY=${WEAVE_PKG_DRYRUN:-}
+
+run() {
+	if [ -n "$DRY" ]; then
+		echo "+ $*"
+	else
+		"$@"
+	fi
+}
+
+# quietly runs a command whose output and failure do not matter; a dry run
+# still prints it.
+quietly() {
+	if [ -n "$DRY" ]; then
+		echo "+ $*"
+	else
+		"$@" >/dev/null 2>&1 || true
+	fi
+}
+
+case ${1:-} in
+"") ;;
+*)
+	echo "usage: $0" >&2
+	exit 2
+	;;
+esac
+if [ -z "$DRY" ] && [ "$(id -u)" != 0 ]; then
+	echo "$ID: run as root (sudo $0)" >&2
+	exit 1
+fi
+
+# The package's files, then its directory. Anything else in the directory
+# (a config.json an operator added) is not the package's to delete, so the
+# directory stays with it.
+run rm -f "$MODULE/$ID" "$MODULE/module.manifest.json"
+run rmdir "$MODULE" 2>/dev/null || echo "$ID: $MODULE holds files the package did not install; left in place"
+quietly "$PKGUTIL" --forget "$PKGID"
+
+# With the files gone, core's next pass stops the module. A loaded daemon is
+# told now rather than at its next watch event or rescan.
+if "$LAUNCHCTL" print "system/$LABEL" >/dev/null 2>&1; then
+	quietly "$LAUNCHCTL" kill HUP "system/$LABEL"
+fi
+
+run rm -f "$UNINSTALLERS/$ID.sh"
+quietly rmdir "$UNINSTALLERS"
+echo "$ID: removed"
