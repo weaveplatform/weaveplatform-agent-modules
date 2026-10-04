@@ -2,7 +2,7 @@ module github.com/weaveplatform/weaveplatform-agent-modules/modules/weave-macos-
 
 go 1.27
 
-require github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.0.0-00010101000000-000000000000
+require github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.1
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
