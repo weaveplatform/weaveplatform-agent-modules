@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -124,8 +126,13 @@ func TestBuildPackagesTheModule(t *testing.T) {
 	}
 
 	control := map[string]string{}
+	var controlOrder []string
 	for _, e := range readTarGz(t, members[1].data) {
 		control[e.hdr.Name] = e.data
+		controlOrder = append(controlOrder, e.hdr.Name)
+	}
+	if got := strings.Join(controlOrder, " "); got != "./control ./md5sums ./postinst ./postrm" {
+		t.Fatalf("control entries %s", got)
 	}
 	want := []string{
 		"Package: weave-linux-presence\n",
@@ -321,5 +328,158 @@ func TestBuildRefusalSentinels(t *testing.T) {
 	}
 	if _, err := build(bin, other, "amd64", t.TempDir()); !errors.Is(err, errManifest) {
 		t.Errorf("manifest: %v", err)
+	}
+}
+
+// The control archive carries the maintainer scripts as dpkg runs them:
+// executable, root-owned, byte for byte the scripts shellcheck reads.
+func TestControlArchiveCarriesMaintainerScripts(t *testing.T) {
+	at := pinNow(t)
+	bin, man := fixture(t, presenceManifest, []byte("x"))
+	path, err := build(bin, man, "arm64", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	modes := map[string]int64{
+		"./control": 0o644, "./md5sums": 0o644, "./postinst": 0o755, "./postrm": 0o755,
+	}
+	scripts := map[string][]byte{"./postinst": postinst, "./postrm": postrm}
+	for _, e := range readTarGz(t, readAr(t, raw)[1].data) {
+		want, ok := modes[e.hdr.Name]
+		if !ok {
+			t.Errorf("unexpected control entry %s", e.hdr.Name)
+			continue
+		}
+		delete(modes, e.hdr.Name)
+		if e.hdr.Typeflag != tar.TypeReg || e.hdr.Mode != want {
+			t.Errorf(
+				"%s: type %c mode %o, want regular %o",
+				e.hdr.Name,
+				e.hdr.Typeflag,
+				e.hdr.Mode,
+				want,
+			)
+		}
+		if e.hdr.Uid != 0 || e.hdr.Gid != 0 || e.hdr.Uname != "root" || e.hdr.Gname != "root" ||
+			!e.hdr.ModTime.Equal(at) {
+			t.Errorf("%s: %+v", e.hdr.Name, e.hdr)
+		}
+		if s, ok := scripts[e.hdr.Name]; ok && e.data != string(s) {
+			t.Errorf("%s differs from scripts/%s", e.hdr.Name, strings.TrimPrefix(e.hdr.Name, "./"))
+		}
+		// md5sums covers the installed files, never the control members.
+		if e.hdr.Name == "./md5sums" && strings.Contains(e.data, "post") {
+			t.Errorf("md5sums lists a maintainer script:\n%s", e.data)
+		}
+	}
+	if len(modes) != 0 {
+		t.Errorf("missing control entries %v", modes)
+	}
+}
+
+// Each script is a POSIX sh script that stops on error and reloads only an
+// active weave-agent under systemd, never failing on the reload itself.
+func TestMaintainerScriptsShape(t *testing.T) {
+	for name, s := range map[string][]byte{"postinst": postinst, "postrm": postrm} {
+		text := string(s)
+		if !strings.HasPrefix(text, "#!/bin/sh\n") {
+			t.Errorf("%s: no #!/bin/sh line", name)
+		}
+		for _, want := range []string{
+			"\nset -e\n",
+			"[ -d /run/systemd/system ]",
+			"systemctl is-active --quiet weave-agent",
+			"systemctl reload weave-agent || true",
+			`case "$1" in`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s lacks %q", name, want)
+			}
+		}
+	}
+}
+
+// runScript runs a maintainer script with a fake systemctl first on PATH. The
+// fake logs each call, reports the unit as active when active is set, and
+// fails every reload, which the script must swallow.
+func runScript(t *testing.T, script []byte, active bool, args ...string) (int, string) {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil || runtime.GOOS == "windows" {
+		t.Skip("no POSIX sh")
+	}
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	state := "3"
+	if active {
+		state = "0"
+	}
+	fake := "#!/bin/sh\necho \"$*\" >> '" + log + "'\n" +
+		"case \"$1\" in is-active) exit " + state + ";; *) exit 1;; esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "script")
+	if err := os.WriteFile(path, script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(sh, append([]string{path}, args...)...)
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, _ := cmd.CombinedOutput()
+	calls, _ := os.ReadFile(log)
+	if len(out) > 0 && cmd.ProcessState.ExitCode() == 0 {
+		t.Errorf("%v printed %q", args, out)
+	}
+	return cmd.ProcessState.ExitCode(), string(calls)
+}
+
+// The scripts handle every action dpkg passes them: they reload on the ones
+// that change the installed module, do nothing on the rest, and refuse an
+// unknown action as Debian policy asks. Whether a reload is attempted depends
+// on systemd running on this host, so that is checked against the host.
+func TestMaintainerScriptActions(t *testing.T) {
+	_, statErr := os.Stat("/run/systemd/system")
+	systemd := statErr == nil
+	cases := []struct {
+		name   string
+		script []byte
+		args   []string
+		reload bool
+	}{
+		{"postinst", postinst, []string{"configure", "0.1.0"}, true},
+		{"postinst", postinst, []string{"abort-upgrade", "0.1.0"}, false},
+		{"postinst", postinst, []string{"abort-remove"}, false},
+		{"postinst", postinst, []string{"abort-deconfigure", "in-favour", "x", "1"}, false},
+		{"postrm", postrm, []string{"remove"}, true},
+		{"postrm", postrm, []string{"purge"}, true},
+		{"postrm", postrm, []string{"upgrade", "0.2.0"}, false},
+		{"postrm", postrm, []string{"failed-upgrade", "0.1.0"}, false},
+		{"postrm", postrm, []string{"abort-install"}, false},
+		{"postrm", postrm, []string{"abort-upgrade", "0.1.0"}, false},
+		{"postrm", postrm, []string{"disappear", "other", "1"}, false},
+	}
+	for _, c := range cases {
+		for _, active := range []bool{true, false} {
+			t.Run(c.name+" "+strings.Join(c.args, " "), func(t *testing.T) {
+				code, calls := runScript(t, c.script, active, c.args...)
+				if code != 0 {
+					t.Fatalf("exit %d", code)
+				}
+				reloaded := strings.Contains(calls, "reload weave-agent")
+				if want := c.reload && active && systemd; reloaded != want {
+					t.Fatalf("reloaded %v, want %v (systemd %v, active %v): %q",
+						reloaded, want, systemd, active, calls)
+				}
+				if !c.reload && calls != "" {
+					t.Fatalf("systemctl called on %v: %q", c.args, calls)
+				}
+			})
+		}
+	}
+	for name, s := range map[string][]byte{"postinst": postinst, "postrm": postrm} {
+		if code, calls := runScript(t, s, true, "bogus"); code != 1 || calls != "" {
+			t.Errorf("%s bogus: exit %d, calls %q", name, code, calls)
+		}
 	}
 }

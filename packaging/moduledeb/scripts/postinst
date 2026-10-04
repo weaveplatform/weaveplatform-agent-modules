@@ -1,0 +1,30 @@
+#!/bin/sh
+# postinst of a weave module package, written by packaging/moduledeb.
+#
+# Tells a running weave-agent to reload its modules, so the module this
+# package installed or upgraded starts at once. weave-agent also watches its
+# modules directory, which covers a chroot or image build where no systemd
+# runs; this makes the reload explicit and immediate where one does. It never
+# fails the package operation: the module is installed whether or not the
+# reload lands.
+set -e
+
+reload_weave_agent() {
+	if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1 &&
+		systemctl is-active --quiet weave-agent; then
+		systemctl reload weave-agent || true
+	fi
+}
+
+case "$1" in
+configure)
+	reload_weave_agent
+	;;
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+*)
+	echo "postinst called with unknown argument '$1'" >&2
+	exit 1
+	;;
+esac
+
+exit 0

@@ -1,0 +1,29 @@
+#!/bin/sh
+# postrm of a weave module package, written by packaging/moduledeb.
+#
+# Tells a running weave-agent to reload its modules, so the module this
+# package removed stops at once. weave-agent also watches its modules
+# directory, which covers a chroot or image build where no systemd runs; this
+# makes the reload explicit and immediate where one does. It never fails the
+# package operation.
+set -e
+
+reload_weave_agent() {
+	if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1 &&
+		systemctl is-active --quiet weave-agent; then
+		systemctl reload weave-agent || true
+	fi
+}
+
+case "$1" in
+remove | purge)
+	reload_weave_agent
+	;;
+upgrade | failed-upgrade | abort-install | abort-upgrade | disappear) ;;
+*)
+	echo "postrm called with unknown argument '$1'" >&2
+	exit 1
+	;;
+esac
+
+exit 0

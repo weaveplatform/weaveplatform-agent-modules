@@ -5,8 +5,10 @@
 // This turns that pair into the package core's Linux layout expects: the
 // binary at /usr/lib/weave/modules/<id>/<id> (core looks for exactly that
 // name) and the manifest beside it, both root-owned, in a package named for
-// the module id that depends on weave-agent. It is stdlib only, so it runs on
-// any host that builds Go, including macOS, where there is no dpkg-deb.
+// the module id that depends on weave-agent. Its postinst and postrm tell a
+// running weave-agent to reload, so installing, upgrading or removing the
+// package takes effect at once. It is stdlib only, so it runs on any host that
+// builds Go, including macOS, where there is no dpkg-deb.
 //
 //	moduledeb -binary weave-linux-presence -manifest module.manifest.json -arch arm64 -out dist
 package main
@@ -16,6 +18,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/md5" //nolint:gosec // dpkg's md5sums file format; not a security claim
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -49,6 +52,17 @@ var (
 	errManifest    = errors.New("invalid module manifest")
 	errArch        = errors.New("unsupported architecture")
 	errNotDeclared = errors.New("platform not declared by the module")
+)
+
+// The maintainer scripts every module package carries. Each reloads
+// weave-agent when systemd runs and the unit is active, and never fails the
+// package operation; weave-agent's watch on its modules directory covers the
+// rest (a chroot or an image build). shellcheck reads them as they are here.
+var (
+	//go:embed scripts/postinst
+	postinst []byte
+	//go:embed scripts/postrm
+	postrm []byte
 )
 
 // now is a seam so tests can pin the timestamps written into the archives.
@@ -225,6 +239,8 @@ func controlTar(m moduleManifest, darch string, files []file, mtime time.Time) (
 	return tarGz(nil, []file{
 		{name: "control", mode: 0o644, data: []byte(controlText(m, darch, files))},
 		{name: "md5sums", mode: 0o644, data: []byte(sums.String())},
+		{name: "postinst", mode: 0o755, data: postinst},
+		{name: "postrm", mode: 0o755, data: postrm},
 	}, mtime)
 }
 
