@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-macos-clipboard/v0.2.0...modules/weave-macos-clipboard/v0.2.1) (2026-10-04)
+
+
+### Features
+
+* **clipboard:** report what each guest clipboard holds ([3dc620b](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/3dc620b0929bf01a9c8104a8186a3f214d61bb24))
+* macOS module packages and clipboard parity across guest OSes ([8d95aac](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/8d95aace425d6ec366a759250289cc877e149d05))
+
 ## 0.2.0 (2026-10-03)
 
 
