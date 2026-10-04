@@ -9,6 +9,24 @@ import (
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
+// The canonical list is exactly the formats IsClipboardFormat accepts.
+func TestCanonicalClipboardFormats(t *testing.T) {
+	all := weavewire.ClipboardFormats()
+	if len(all) != 7 {
+		t.Fatalf("%d canonical formats: %v", len(all), all)
+	}
+	for _, f := range all {
+		if !weavewire.IsClipboardFormat(f) {
+			t.Errorf("%s is listed and not canonical", f)
+		}
+	}
+	for _, f := range []weavewire.ClipboardFormat{"", "text/plain;charset=utf-8", "image/jpeg"} {
+		if weavewire.IsClipboardFormat(f) {
+			t.Errorf("%q is canonical", f)
+		}
+	}
+}
+
 // The console payloads' JSON spelled out: a renamed field is a value the other
 // end silently reads as zero.
 func TestConsolePayloadSpelling(t *testing.T) {
@@ -32,6 +50,18 @@ func TestConsolePayloadSpelling(t *testing.T) {
 		},
 		`{"change_token":2,"written":["text/rtf"]}`: weavewire.ClipboardSetResponse{
 			ChangeToken: 2, Written: []weavewire.ClipboardFormat{weavewire.ClipboardRTF},
+		},
+		`{"change_token":3,"written":["image/png"],"unwritten":["text/plain","x/y"]}`: weavewire.ClipboardSetResponse{
+			ChangeToken: 3, Written: []weavewire.ClipboardFormat{weavewire.ClipboardPNG},
+			Unwritten: []weavewire.ClipboardFormat{weavewire.ClipboardText, "x/y"},
+		},
+		`{"change_token":4,"support":[{"format":"application/pdf","held":true,"native":"Portable Document Format","private":true},{"format":"files","held":false,"reason":"r"}],"single_representation":true,"limitation":"l"}`: weavewire.ClipboardStatResponse{
+			ChangeToken: 4,
+			Support: []weavewire.ClipboardFormatSupport{
+				{Format: weavewire.ClipboardPDF, Held: true, Native: "Portable Document Format", Private: true},
+				{Format: weavewire.ClipboardFiles, Reason: "r"},
+			},
+			SingleRepresentation: true, Limitation: "l",
 		},
 		`{"session":{"id":"2","user":"alice","uid":"501","state":"locked","console":true,"since":"2026-10-03T09:00:00Z"}}`: weavewire.SessionCurrentResponse{
 			Session: &weavewire.SessionInfo{

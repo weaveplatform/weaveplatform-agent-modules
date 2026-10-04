@@ -518,3 +518,110 @@ func TestMalformedUploadChunksAreDropped(t *testing.T) {
 		t.Fatal(res.Err)
 	}
 }
+
+// described is a clipboard that holds text and HTML only, one per set.
+type described struct{ memClipboard }
+
+func (d *described) Support() weaveclipboard.Support {
+	s := weaveclipboard.CanonicalSupport(map[weavewire.ClipboardFormat]string{
+		weavewire.ClipboardText: "UTF8_STRING", weavewire.ClipboardHTML: "text/html",
+	})
+	for i, f := range s.Formats {
+		if f.Native == "" {
+			s.Formats[i].Held = false
+			s.Formats[i].Reason = "not here"
+		}
+	}
+	s.SingleRepresentation = true
+	s.Limitation = "one at a time"
+	return s
+}
+
+// The write keeps the richest, as a single-representation clipboard does.
+func (d *described) Write(
+	ctx context.Context,
+	items []weavewire.ClipboardItem,
+) (weavewire.ClipboardSetResponse, error) {
+	return d.memClipboard.Write(ctx, items[len(items)-1:])
+}
+
+func TestStatReportsWhatTheBackendHolds(t *testing.T) {
+	var st weavewire.ClipboardStatResponse
+	start(t, &memClipboard{}).Decode(weavewire.KindClipboardStat, nil, &st)
+	if len(st.Support) != len(weavewire.ClipboardFormats()) || st.SingleRepresentation {
+		t.Fatalf("an undescribed backend: %+v", st)
+	}
+	for i, f := range weavewire.ClipboardFormats() {
+		if st.Support[i].Format != f || !st.Support[i].Held {
+			t.Errorf("support[%d] = %+v, want %s held", i, st.Support[i], f)
+		}
+	}
+
+	b := &described{}
+	h := weavemoduletest.Start(t, weaveclipboard.NewService(b))
+	h.Decode(weavewire.KindClipboardStat, nil, &st)
+	if !st.SingleRepresentation || st.Limitation != "one at a time" {
+		t.Fatalf("stat = %+v", st)
+	}
+	for _, f := range st.Support {
+		held := f.Format == weavewire.ClipboardText || f.Format == weavewire.ClipboardHTML
+		if f.Held != held || (held && f.Native == "") || (!held && f.Reason == "") {
+			t.Errorf("support %+v", f)
+		}
+	}
+}
+
+// What a set does not write is listed, each format once: a format the guest
+// does not hold never reaches the backend, and one the backend dropped is
+// reported as well.
+func TestSetReportsWhatItDidNotWrite(t *testing.T) {
+	b := &described{}
+	h := weavemoduletest.Start(t, weaveclipboard.NewService(b))
+	var got weavewire.ClipboardSetResponse
+	h.Decode(
+		weavewire.KindClipboardSet,
+		weavewire.ClipboardSetRequest{Items: []weavewire.ClipboardItem{
+			{Format: weavewire.ClipboardPNG, Data: []byte("png")},
+			text("hi"),
+			{Format: "x/unknown", Data: []byte("?")},
+			{Format: weavewire.ClipboardHTML, Data: []byte("<i>hi</i>")},
+			{Format: "x/unknown", Data: []byte("?")},
+		}},
+		&got,
+	)
+	if !slices.Equal(got.Written, []weavewire.ClipboardFormat{weavewire.ClipboardHTML}) {
+		t.Fatalf("written %v", got.Written)
+	}
+	if want := []weavewire.ClipboardFormat{
+		weavewire.ClipboardPNG, weavewire.ClipboardText, "x/unknown",
+	}; !slices.Equal(got.Unwritten, want) {
+		t.Errorf("unwritten %v, want %v", got.Unwritten, want)
+	}
+	if len(b.written) != 1 || len(b.written[0]) != 1 {
+		t.Errorf("the backend was handed %+v", b.written)
+	}
+}
+
+// A set of nothing the guest holds is unsupported, and the clipboard is left
+// exactly as it was.
+func TestSetOfNothingHeldIsUnsupported(t *testing.T) {
+	b := &memClipboard{token: 4, items: []weavewire.ClipboardItem{text("kept")}}
+	h := start(t, b)
+	res := h.Call(
+		weavewire.KindClipboardSet,
+		weavewire.ClipboardSetRequest{Items: []weavewire.ClipboardItem{
+			{
+				Format: "x/one",
+				Data:   []byte("1"),
+			},
+			{Format: "x/two", Data: []byte("2")},
+			{Format: "x/one"},
+		}},
+	)
+	if res.Code != weavewire.CodeUnsupported || !strings.Contains(res.Err, "none of x/one, x/two") {
+		t.Fatalf("result %+v", res)
+	}
+	if len(b.written) != 0 || b.token != 4 {
+		t.Errorf("the clipboard was written: %+v", b.written)
+	}
+}

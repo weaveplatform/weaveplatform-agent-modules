@@ -19,23 +19,24 @@ import (
 // The offsets count from the start of the header. The other OSes carry bare
 // HTML, so the header is removed on read and added on write.
 
-// fromCFHTML returns the HTML document a CF_HTML block carries: from
-// StartHTML to EndHTML, or the fragment when an application gave no document
-// (StartHTML of -1, which the format allows). A block whose offsets do not fit
-// it is cut at the end of its header instead, so a wrong offset costs the
-// precision of the cut, not the content.
+// fromCFHTML returns the HTML a CF_HTML block carries: the fragment, from
+// StartFragment to EndFragment, which is what was copied and what the other
+// OSes carry as bare HTML — so HTML written here reads back byte for byte —
+// or, when the fragment offsets do not fit the block, the document from
+// StartHTML to EndHTML. A block whose offsets fit neither is cut at the end
+// of its header instead, so a wrong offset costs the precision of the cut,
+// not the content.
 func fromCFHTML(raw []byte) string {
 	s := string(trimNUL(raw))
 	if !strings.HasPrefix(s, "Version:") {
 		return s
 	}
 	h := header(s)
-	start, end := h["StartHTML"], h["EndHTML"]
-	if start < 0 {
-		start, end = h["StartFragment"], h["EndFragment"]
-	}
-	if start > 0 && start <= end && end <= len(s) {
-		return s[start:end]
+	for _, span := range [][2]string{{"StartFragment", "EndFragment"}, {"StartHTML", "EndHTML"}} {
+		start, end := h[span[0]], h[span[1]]
+		if start > 0 && start <= end && end <= len(s) {
+			return s[start:end]
+		}
 	}
 	if i := strings.Index(s, "<"); i >= 0 {
 		return s[i:]

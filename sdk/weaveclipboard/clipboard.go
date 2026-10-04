@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveagent"
@@ -40,6 +41,36 @@ type Backend interface {
 		ctx context.Context,
 		items []weavewire.ClipboardItem,
 	) (weavewire.ClipboardSetResponse, error)
+}
+
+// Support is what a backend's clipboard can hold: for every canonical format
+// (weavewire.ClipboardFormats), whether and under which native name.
+type Support struct {
+	Formats []weavewire.ClipboardFormatSupport
+	// SingleRepresentation reports a clipboard that holds one representation
+	// per set; Limitation says why.
+	SingleRepresentation bool
+	Limitation           string
+}
+
+// Describer is a Backend that says what its clipboard can hold. The service
+// reports it in every stat, refuses a set of nothing it can hold, and passes
+// a set only the formats it holds. A backend that does not describe itself is
+// taken to hold every canonical format.
+type Describer interface {
+	Support() Support
+}
+
+// CanonicalSupport is the Support of a backend that holds every canonical
+// format at once, with native names from natives.
+func CanonicalSupport(natives map[weavewire.ClipboardFormat]string) Support {
+	var s Support
+	for _, f := range weavewire.ClipboardFormats() {
+		s.Formats = append(s.Formats, weavewire.ClipboardFormatSupport{
+			Format: f, Held: true, Native: natives[f],
+		})
+	}
+	return s
 }
 
 // Contents is one consistent read of the clipboard.
@@ -93,11 +124,23 @@ func (s *Service) Register(r *weavemodule.Registrar) error {
 	return nil
 }
 
+// support is what the backend holds.
+func (s *Service) support() Support {
+	if d, ok := s.b.(Describer); ok {
+		return d.Support()
+	}
+	return CanonicalSupport(nil)
+}
+
 func (s *Service) handleStat(ctx context.Context, _ []byte) ([]byte, error) {
 	st, err := s.b.Stat(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("weaveclipboard: stat: %w", err)
 	}
+	sup := s.support()
+	st.Support = sup.Formats
+	st.SingleRepresentation = sup.SingleRepresentation
+	st.Limitation = sup.Limitation
 	return weavewire.EncodePayload(st)
 }
 
@@ -220,11 +263,45 @@ func (s *Service) handleSet(ctx context.Context, payload []byte) ([]byte, error)
 		return nil, err
 	}
 
-	res, err := s.b.Write(ctx, items)
+	// Only what the guest holds reaches the backend. A set of nothing it
+	// holds is an answer, not a fault, and must not empty the clipboard on
+	// its way to writing nothing.
+	held := make(map[weavewire.ClipboardFormat]bool)
+	for _, f := range s.support().Formats {
+		held[f.Format] = f.Held
+	}
+	writable := slices.DeleteFunc(items, func(it weavewire.ClipboardItem) bool {
+		return !held[it.Format]
+	})
+	if len(writable) == 0 {
+		return nil, &weavewire.UnsupportedError{
+			Kind:   weavewire.KindClipboardSet,
+			Reason: "this guest's clipboard holds none of " + formatList(req.Items),
+		}
+	}
+
+	res, err := s.b.Write(ctx, writable)
 	if err != nil {
 		return nil, fmt.Errorf("weaveclipboard: writing: %w", err)
 	}
+	res.Unwritten = nil
+	for _, it := range req.Items {
+		if !slices.Contains(res.Written, it.Format) && !slices.Contains(res.Unwritten, it.Format) {
+			res.Unwritten = append(res.Unwritten, it.Format)
+		}
+	}
 	return weavewire.EncodePayload(res)
+}
+
+// formatList names the distinct formats of items, in order.
+func formatList(items []weavewire.ClipboardItem) string {
+	var names []string
+	for _, it := range items {
+		if !slices.Contains(names, string(it.Format)) {
+			names = append(names, string(it.Format))
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // checkInline verifies each inline item's declared size against its data and

@@ -375,3 +375,34 @@ func TestWriteRefusesAFileWithNoName(t *testing.T) {
 		t.Fatalf("err = %v, want errBadName", err)
 	}
 }
+
+// Every set moves the token, even one that writes what the clipboard held.
+func TestEverySetChangesTheToken(t *testing.T) {
+	installFake(t)
+	c := wayland(t)
+	items := []weavewire.ClipboardItem{{Format: weavewire.ClipboardText, Data: []byte("same")}}
+	first, err := c.Write(context.Background(), items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Write(context.Background(), items)
+	if err != nil || second.ChangeToken == first.ChangeToken {
+		t.Fatalf("tokens %d then %d, %v", first.ChangeToken, second.ChangeToken, err)
+	}
+}
+
+func TestSupportIsOneRepresentationPerSet(t *testing.T) {
+	installFake(t)
+	for _, c := range []*clipboard{wayland(t), detect(func(string) string { return "" }, lookPath)} {
+		s := c.Support()
+		if !s.SingleRepresentation || s.Limitation == "" ||
+			len(s.Formats) != len(weavewire.ClipboardFormats()) {
+			t.Fatalf("support %+v", s)
+		}
+		for _, f := range s.Formats {
+			if !f.Held || f.Native == "" {
+				t.Errorf("%+v", f)
+			}
+		}
+	}
+}

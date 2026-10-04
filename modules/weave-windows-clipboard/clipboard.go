@@ -51,6 +51,29 @@ func newClipboard() *clipboard {
 	return &clipboard{w: systemClipboard(), run: onClipboardThread, stage: &stager{}}
 }
 
+// natives are the clipboard format names each weave format is held under.
+var natives = map[weavewire.ClipboardFormat]string{
+	weavewire.ClipboardText:  "CF_UNICODETEXT",
+	weavewire.ClipboardHTML:  registeredNames[weavewire.ClipboardHTML],
+	weavewire.ClipboardRTF:   registeredNames[weavewire.ClipboardRTF],
+	weavewire.ClipboardPNG:   registeredNames[weavewire.ClipboardPNG],
+	weavewire.ClipboardTIFF:  "CF_TIFF",
+	weavewire.ClipboardFiles: "CF_HDROP",
+}
+
+// Support reports every canonical format the clipboard holds at once, under
+// its format name, and PDF as not held.
+func (c *clipboard) Support() weaveclipboard.Support {
+	s := weaveclipboard.CanonicalSupport(natives)
+	for i, f := range s.Formats {
+		if f.Format == weavewire.ClipboardPDF {
+			s.Formats[i].Held = false
+			s.Formats[i].Reason = "Windows has no clipboard format applications share for PDF"
+		}
+	}
+	return s
+}
+
 // formatID is the clipboard format a weave format is held as, 0 for none. A
 // registered format's number is assigned per session at run time, and stays
 // fixed for the session once registered.

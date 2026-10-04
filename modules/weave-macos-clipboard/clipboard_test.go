@@ -4,9 +4,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -250,5 +252,38 @@ func TestStatOfTheGeneralPasteboard(t *testing.T) {
 		1<<10,
 	); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Outside a GUI session there is no pasteboard: every op is an unsupported
+// answer, so a host can tell a guest it cannot sync from a broken module.
+func TestWithoutAPasteboardEveryOpIsUnsupported(t *testing.T) {
+	c := &clipboard{board: func() *appkit.Pasteboard { return nil }, stage: &stager{}}
+	ctx := context.Background()
+	_, statErr := c.Stat(ctx)
+	_, readErr := c.Read(ctx, nil, 1<<20)
+	_, writeErr := c.Write(ctx, []weavewire.ClipboardItem{{Format: weavewire.ClipboardText}})
+	for kind, err := range map[string]error{
+		weavewire.KindClipboardStat: statErr,
+		weavewire.KindClipboardGet:  readErr,
+		weavewire.KindClipboardSet:  writeErr,
+	} {
+		u, ok := errors.AsType[*weavewire.UnsupportedError](err)
+		if !ok || u.Kind != kind || !strings.Contains(u.Reason, "GUI session") {
+			t.Errorf("%s: err = %v, want unsupported", kind, err)
+		}
+	}
+}
+
+// Every canonical format is held, each under its UTI.
+func TestSupportIsEveryFormatUnderItsUTI(t *testing.T) {
+	s := newClipboard().Support()
+	if s.SingleRepresentation || len(s.Formats) != len(weavewire.ClipboardFormats()) {
+		t.Fatalf("support %+v", s)
+	}
+	for _, f := range s.Formats {
+		if !f.Held || f.Native != utis[f.Format] || f.Native == "" {
+			t.Errorf("%+v", f)
+		}
 	}
 }

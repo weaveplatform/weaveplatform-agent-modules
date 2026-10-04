@@ -4,11 +4,13 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveclipboard"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
@@ -26,6 +28,9 @@ type clipboard struct {
 	// missing says why there is no tool, for the unsupported answer.
 	missing string
 	stage   *stager
+	// sets counts this module's own writes. It is part of the token, so a set
+	// changes the token even when it writes what the clipboard already held.
+	sets atomic.Uint64
 }
 
 func newClipboard() *clipboard {
@@ -55,6 +60,24 @@ func detect(getenv func(string) string, look func(string) bool) *clipboard {
 			"(WAYLAND_DISPLAY and DISPLAY are both unset)"
 	}
 	return c
+}
+
+// Support reports every canonical format, each under the target it is
+// written as, and that the tools hold one of them per set.
+func (c *clipboard) Support() weaveclipboard.Support {
+	natives := make(map[weavewire.ClipboardFormat]string)
+	for f := range targetsFor {
+		if c.tool != nil {
+			natives[f] = c.tool.writeTarget(f)
+		} else {
+			natives[f] = targetsFor[f][0]
+		}
+	}
+	s := weaveclipboard.CanonicalSupport(natives)
+	s.SingleRepresentation = true
+	s.Limitation = "the clipboard is written through a command-line tool, which holds one " +
+		"representation per copy: a set keeps the richest"
+	return s
 }
 
 func (c *clipboard) unsupported(kind string) error {
@@ -110,6 +133,7 @@ func (c *clipboard) snapshot(ctx context.Context) (snapshot, error) {
 		return snapshot{}, err
 	}
 	h := fnv.New64a()
+	_, _ = h.Write(binary.LittleEndian.AppendUint64(nil, c.sets.Load()))
 	for _, t := range targets {
 		_, _ = h.Write([]byte(t))
 		_, _ = h.Write([]byte{0})
@@ -227,6 +251,7 @@ func (c *clipboard) Write(
 	if err := c.tool.copy(ctx, c.tool.writeTarget(format), data); err != nil {
 		return weavewire.ClipboardSetResponse{}, err
 	}
+	c.sets.Add(1)
 	s, err := c.snapshot(ctx)
 	if err != nil {
 		return weavewire.ClipboardSetResponse{}, err

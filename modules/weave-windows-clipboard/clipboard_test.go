@@ -69,7 +69,7 @@ func TestWriteThenStatAndRead(t *testing.T) {
 		read[it.Format] = string(it.Data)
 	}
 	for f, want := range map[weavewire.ClipboardFormat]string{
-		weavewire.ClipboardText: "héllo ✓", weavewire.ClipboardHTML: "<html><body><!--StartFragment--><b>héllo</b><!--EndFragment--></body></html>",
+		weavewire.ClipboardText: "héllo ✓", weavewire.ClipboardHTML: "<b>héllo</b>",
 		weavewire.ClipboardRTF: `{\rtf1 hi}`, weavewire.ClipboardPNG: "\x89PNG", weavewire.ClipboardTIFF: "II*\x00",
 	} {
 		if read[f] != want {
@@ -235,7 +235,13 @@ func TestCFHTML(t *testing.T) {
 		"StartFragment:0000000141\r\nEndFragment:0000000163\r\n" +
 		"<html>\r\n<body>\r\n<!--StartFragment--><b>bold</b> text<!--EndFragment-->\r\n</body>\r\n</html>"
 	for name, tc := range map[string]struct{ in, want string }{
-		"document": {edge, "<html>\r\n<body>\r\n<!--StartFragment--><b>bold</b> text<!--EndFragment-->\r\n</body>\r\n</html>"},
+		"document": {edge, "<b>bold</b> text"},
+		"fragment past the end": {
+			"Version:0.9\r\nStartHTML:0000000105\r\nEndHTML:0000000193\r\n" +
+				"StartFragment:0000000141\r\nEndFragment:0000099999\r\n" +
+				"<html>\r\n<body>\r\n<!--StartFragment--><b>bold</b> text<!--EndFragment-->\r\n</body>\r\n</html>",
+			"<html>\r\n<body>\r\n<!--StartFragment--><b>bold</b> text<!--EndFragment-->\r\n</body>\r\n</html>",
+		},
 		"source url": {
 			"Version:1.0\r\nStartHTML:-1\r\nEndHTML:-1\r\nStartFragment:0000000121\r\nEndFragment:0000000129\r\n" +
 				"SourceURL:https://example.com/\r\n<i>x</i>\x00",
@@ -253,12 +259,15 @@ func TestCFHTML(t *testing.T) {
 		}
 	}
 
-	// What toCFHTML writes, fromCFHTML reads back as the wrapped fragment,
-	// and its fragment offsets point exactly at the fragment.
+	// What toCFHTML writes, fromCFHTML reads back as the fragment it was
+	// given, and its fragment offsets point exactly at the fragment.
 	block := string(toCFHTML("<b>ü</b>"))
 	h := header(block)
 	if frag := block[h["StartFragment"]:h["EndFragment"]]; frag != "<b>ü</b>" {
 		t.Errorf("fragment offsets select %q", frag)
+	}
+	if got := fromCFHTML([]byte(block)); got != "<b>ü</b>" {
+		t.Errorf("read back %q", got)
 	}
 	if !strings.HasSuffix(block, "</html>\x00") ||
 		block[h["StartHTML"]:h["EndHTML"]] != fragmentStart+"<b>ü</b>"+fragmentEnd {
@@ -338,4 +347,20 @@ func TestWritesAreRefusedWithoutTheClipboardOpen(t *testing.T) {
 		_, _ = foundation.GlobalFree(foundation.HGLOBAL(h))
 	}()
 	<-done
+}
+
+// Every canonical format but PDF is held, under the format name applications
+// share for it.
+func TestSupportNamesEachFormat(t *testing.T) {
+	c, _ := backend(t)
+	s := c.Support()
+	if s.SingleRepresentation || len(s.Formats) != len(weavewire.ClipboardFormats()) {
+		t.Fatalf("support %+v", s)
+	}
+	for _, f := range s.Formats {
+		if pdf := f.Format == weavewire.ClipboardPDF; f.Held == pdf ||
+			(f.Held && f.Native == "") || (!f.Held && f.Reason == "") {
+			t.Errorf("%+v", f)
+		}
+	}
 }
