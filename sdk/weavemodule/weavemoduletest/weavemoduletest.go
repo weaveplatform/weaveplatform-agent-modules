@@ -99,6 +99,9 @@ func (t *Transport) WaitFor(timeout time.Duration, cond func([]modulesdk.Message
 // published events are recorded.
 type Host struct {
 	T *Transport
+	// Modules is the registry the module sees through Registry: empty
+	// until the test sets what is installed.
+	Modules *Registry
 
 	mu        sync.Mutex
 	policy    *modulesdk.PolicyDocument
@@ -114,7 +117,7 @@ type Published struct {
 }
 
 // NewHost builds a host around t.
-func NewHost(t *Transport) *Host { return &Host{T: t} }
+func NewHost(t *Transport) *Host { return &Host{T: t, Modules: NewRegistry()} }
 
 // SetPolicy delivers a policy document; err, when non-nil, is what Get
 // returns instead (no policy delivered yet).
@@ -164,6 +167,9 @@ func (h *Host) Policy() modulesdk.PolicyReader {
 	}
 	return policyReader{h}
 }
+
+// Registry implements modulesdk.Host with h.Modules.
+func (h *Host) Registry() modulesdk.Registry { return h.Modules }
 
 // Events implements modulesdk.Host.
 func (h *Host) Events() modulesdk.Events { return events{h} }

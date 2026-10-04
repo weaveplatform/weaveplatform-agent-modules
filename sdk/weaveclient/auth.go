@@ -52,7 +52,7 @@ func (c *Client) Authenticate(ctx context.Context, priv ed25519.PrivateKey) erro
 	c.beginControlWait()
 	defer c.endControlWait()
 
-	if err := c.sendControl(hvchannel.KindAuthBegin, nil); err != nil {
+	if err := c.sendControl(hvchannel.KindAuthBegin, "", nil); err != nil {
 		return err
 	}
 	challengeEnv, err := c.awaitControl(ctx, hvchannel.KindAuthChallenge)
@@ -68,7 +68,7 @@ func (c *Client) Authenticate(ctx context.Context, priv ed25519.PrivateKey) erro
 	if err != nil {
 		return fmt.Errorf("weaveclient: answering the challenge: %w", err)
 	}
-	if err := c.sendControl(hvchannel.KindAuthResponse, resp); err != nil {
+	if err := c.sendControl(hvchannel.KindAuthResponse, "", resp); err != nil {
 		return err
 	}
 
@@ -83,13 +83,21 @@ func (c *Client) Authenticate(ctx context.Context, priv ed25519.PrivateKey) erro
 	if !result.OK {
 		return fmt.Errorf("%w: %s", ErrAuthRefused, result.Reason)
 	}
+	// A fresh authentication may be a fresh core — a guest whose agent
+	// restarted behind the same channel, with its registry revision back at
+	// 1 — so the snapshot was dropped when the result arrived (routeControl)
+	// and is fetched again now, as core's protocol asks of a host that wants
+	// a complete view. In the background: an older core never answers, and
+	// authenticating must not wait out that silence.
+	go c.refreshModules(context.WithoutCancel(ctx))
 	return nil
 }
 
 // sendControl writes one frame addressed to the channel itself rather than to a
 // module. It bypasses the module addressing in send because control frames are
-// not module traffic and must not be mistaken for it at either end.
-func (c *Client) sendControl(kind string, payload any) error {
+// not module traffic and must not be mistaken for it at either end. id, when
+// set, is echoed on core's reply.
+func (c *Client) sendControl(kind, id string, payload any) error {
 	var data []byte
 	if payload != nil {
 		var err error
@@ -107,7 +115,9 @@ func (c *Client) sendControl(kind string, payload any) error {
 
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	return c.writeFrame(hvchannel.Envelope{Module: hvchannel.ControlModule, Kind: kind, Data: data})
+	return c.writeFrame(
+		hvchannel.Envelope{Module: hvchannel.ControlModule, Kind: kind, Data: data, ID: id},
+	)
 }
 
 // awaitControl waits for one control frame of the given kind.
@@ -157,17 +167,44 @@ func (c *Client) awaitControl(ctx context.Context, want string) (hvchannel.Envel
 
 // routeControl handles a control frame from the read loop.
 //
-// Anything a handshake might be waiting for goes to it. A refusal that arrives
-// with nobody waiting means the guest just rejected a module operation on an
-// unauthenticated channel: fail the calls in flight immediately rather than
-// leaving them to time out, because the timeout would be indistinguishable from
-// a guest that is not there.
+// The registry and undeliverable-message frames are answers to, or news for,
+// whoever is interested regardless of any handshake, so they are routed
+// first and never reach the handshake waiter. An auth.result that echoes an
+// id is core refusing that one frame on an unauthenticated channel: it fails
+// that call alone. Anything else a handshake might be waiting for goes to it.
+//
+// A refusal with no id and nobody waiting comes from a core older than
+// weave-agent v0.9.2, which does not echo ids: it means the guest just
+// rejected a module operation on an unauthenticated channel, and with no way
+// to tell which, every call in flight is failed immediately rather than left
+// to time out, because the timeout would be indistinguishable from a guest
+// that is not there.
 func (c *Client) routeControl(env hvchannel.Envelope) {
+	switch env.Kind {
+	case hvchannel.KindModulesListResult, hvchannel.KindModulesChanged:
+		c.routeModules(env)
+		return
+	case hvchannel.KindDeliveryFailed:
+		c.routeDeliveryFailed(env)
+		return
+	case hvchannel.KindAuthResult:
+		if env.ID != "" {
+			c.routeRefusal(env)
+			return
+		}
+	}
+
 	c.mu.Lock()
 	waiting := c.awaitingControl > 0
 	c.mu.Unlock()
 
 	if waiting {
+		if env.Kind == hvchannel.KindAuthResult {
+			var result hvchannel.AuthResult
+			if json.Unmarshal(env.Data, &result) == nil && result.OK {
+				c.resetModules()
+			}
+		}
 		select {
 		case c.control <- env:
 			return
@@ -185,7 +222,9 @@ func (c *Client) routeControl(env hvchannel.Envelope) {
 	}
 
 	if env.Kind != hvchannel.KindAuthResult {
-		c.log.Warn("weaveclient: dropped a control frame with nobody waiting", "kind", env.Kind)
+		// A control kind this client does not know, from a newer core: the
+		// channel changes additively, so it is not an error.
+		c.log.Debug("weaveclient: unhandled control frame", "kind", env.Kind)
 		return
 	}
 	var result hvchannel.AuthResult
@@ -196,6 +235,22 @@ func (c *Client) routeControl(env hvchannel.Envelope) {
 	c.log.Warn("weaveclient: the guest refused an operation on an unauthenticated channel",
 		"reason", result.Reason)
 	c.failPending(ErrNotAuthenticated)
+}
+
+// routeRefusal fails the one call whose frame core refused.
+func (c *Client) routeRefusal(env hvchannel.Envelope) {
+	var result hvchannel.AuthResult
+	_ = json.Unmarshal(env.Data, &result)
+	if result.OK {
+		return
+	}
+	c.log.Warn("weaveclient: the guest refused an operation on an unauthenticated channel",
+		"reason", result.Reason, "id", env.ID)
+	if !c.answer(env.ID, pendingReply{
+		err: fmt.Errorf("%w: %s", ErrNotAuthenticated, result.Reason),
+	}) {
+		c.log.Debug("weaveclient: refusal for a call no longer waiting", "id", env.ID)
+	}
 }
 
 // failPending releases every waiting call with cause, leaving the channel open.

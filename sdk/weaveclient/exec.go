@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/protocol/hvchannel"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
@@ -125,6 +126,12 @@ type ExecSession struct {
 	stdinMu  sync.Mutex
 	stdinSeq uint64
 
+	// failMu guards failed, core's delivery.failed for this session's input
+	// (or for the session itself). Its own lock, not stdinMu: the read loop
+	// sets it while a writer may hold stdinMu blocked on the channel.
+	failMu sync.Mutex
+	failed error
+
 	once sync.Once
 	done chan struct{}
 	exit weavewire.ExecExit
@@ -171,13 +178,49 @@ func (s *ExecSession) CloseStdin() error {
 // sendStdin stamps and sends one input chunk. The lock covers the sequence
 // number AND the send, because a number assigned under a lock and then sent
 // outside it can still reach the guest out of order.
+//
+// The envelope carries the exec id, so a chunk core cannot deliver comes back
+// to this session as a delivery.failed rather than vanishing.
 func (s *ExecSession) sendStdin(chunk weavewire.Chunk) error {
 	s.stdinMu.Lock()
 	defer s.stdinMu.Unlock()
+	if err := s.failure(); err != nil {
+		return err
+	}
 	chunk.StreamID = s.id
 	chunk.Seq = s.stdinSeq
 	s.stdinSeq++
-	return s.client.Notify(weavewire.KindExecStdin, chunk)
+	return s.client.notify(weavewire.KindExecStdin, s.id, chunk)
+}
+
+func (s *ExecSession) failure() error {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	return s.failed
+}
+
+// undeliverable records core's report that a frame for this session never
+// reached the exec module. The input stream now has a hole in it, so no
+// further input is sent. A module that is gone or not running will never
+// report the exit either, so the session ends here with the error — Wait
+// returns it and the output readers end with it. A busy module is still
+// running the process, so only the input is cut off.
+func (s *ExecSession) undeliverable(err *DeliveryError) {
+	s.failMu.Lock()
+	if s.failed == nil {
+		s.failed = err
+	}
+	s.failMu.Unlock()
+	if err.Reason == hvchannel.ReasonBusy {
+		return
+	}
+	s.once.Do(func() {
+		s.exit = weavewire.ExecExit{ExecID: s.id, Code: -1}
+		s.stdout.fail(err)
+		s.stderr.fail(err)
+		close(s.done)
+	})
+	s.client.unregisterExec(s.id)
 }
 
 var _ io.Writer = (*ExecSession)(nil)
@@ -207,6 +250,9 @@ func (s *ExecSession) Signal(ctx context.Context, name string) error {
 func (s *ExecSession) Wait(ctx context.Context) (int, error) {
 	select {
 	case <-s.done:
+		if err := s.failure(); err != nil && !errors.Is(err, ErrModuleBusy) {
+			return -1, err
+		}
 		if s.exit.Err != "" {
 			return s.exit.Code, fmt.Errorf("%w: exec %s: %s", ErrExecFailed, s.id, s.exit.Err)
 		}
@@ -274,6 +320,17 @@ func (p *streamPipe) accept(chunk weavewire.Chunk) {
 func (p *streamPipe) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.closed = true
+	p.cond.Broadcast()
+}
+
+// fail ends the stream with err, after whatever is already buffered.
+func (p *streamPipe) fail(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.closed && p.err == nil {
+		p.err = err
+	}
 	p.closed = true
 	p.cond.Broadcast()
 }

@@ -26,6 +26,37 @@
 // loop, writes serialised — and callers must not hand the same connection to
 // two Clients. Concurrent CALLS are fine and expected: they are correlated by
 // id, so a slow exec never blocks an urgent shutdown.
+//
+// # Which modules the guest has
+//
+// A guest runs whichever capability modules were installed in it, and a call
+// to one that is not there, or not running, gets no answer from a module. From
+// weave-agent v0.9.2 core answers in its place: every Call carries its command
+// id on the envelope, and when core cannot deliver the frame it says why, so
+// the call fails at once with a *DeliveryError matching ErrModuleNotInstalled,
+// ErrModuleNotRunning or ErrModuleBusy rather than waiting out a timeout. A
+// console capability waiting for a login also matches ErrNoSession, as it
+// always has.
+//
+// Core also shares its registry of installed modules with an authenticated
+// host. Modules asks for it; OnModulesChanged follows every change; and
+// Installed, Running and Module answer from the client's cached copy, so a
+// caller can feature-gate without a round trip:
+//
+//	client := weaveclient.New(ctx, conn, weaveclient.Options{})
+//	if err := client.Authenticate(ctx, key); err != nil { ... }
+//	if _, err := client.Modules(ctx); errors.Is(err, weaveclient.ErrRegistryUnsupported) {
+//		// weave-agent before v0.9.2: call and treat silence as absence
+//	}
+//	if client.Installed(weavewire.Clipboard.Address()) { ... }
+//
+// The client refetches the registry each time Authenticate succeeds, because
+// a fresh authentication may be to a core that restarted, and keeps whichever
+// snapshot has the higher revision, because a push and an answer can arrive in
+// either order. An older core ignores the request, so Modules is bounded by
+// Options.RegistryTimeout and ends in ErrRegistryUnsupported; such a core also
+// sends no delivery failures, and calls behave as they did before: a call to a
+// missing module waits for its context or the session timeout.
 package weaveclient
 
 import (
@@ -68,7 +99,8 @@ type Client struct {
 	idPrefix string
 	nextID   atomic.Uint64
 
-	sessionTimeout time.Duration
+	sessionTimeout  time.Duration
+	registryTimeout time.Duration
 
 	mu      sync.Mutex
 	pending map[string]chan pendingReply
@@ -91,6 +123,12 @@ type Client struct {
 	control         chan hvchannel.Envelope
 	awaitingControl int
 
+	// registry is the highest-revision module snapshot seen on this
+	// connection since it last authenticated; nil until the first one.
+	// moduleHandlers run, on the read loop, each time it advances.
+	registry       *ModulesSnapshot
+	moduleHandlers []func(ModulesSnapshot)
+
 	done chan struct{}
 }
 
@@ -103,7 +141,18 @@ type Options struct {
 	// ErrNoSession. Zero means DefaultSessionTimeout; negative waits as long
 	// as the call's own context allows.
 	SessionTimeout time.Duration
+	// RegistryTimeout bounds how long Modules waits for core to answer
+	// modules.list before reporting ErrRegistryUnsupported: a core older
+	// than weave-agent v0.9.2 ignores the request rather than refusing it.
+	// Zero means DefaultRegistryTimeout; negative waits as long as the
+	// call's own context allows.
+	RegistryTimeout time.Duration
 }
+
+// DefaultRegistryTimeout is how long Modules waits for core's answer by
+// default. Core answers modules.list itself, from memory, without asking any
+// module, so a core that knows the request answers in a round trip.
+const DefaultRegistryTimeout = 3 * time.Second
 
 // DefaultSessionTimeout is how long a per-user-console call waits for an
 // answer by default. A module that is running answers these in milliseconds;
@@ -141,19 +190,23 @@ func New(ctx context.Context, rwc io.ReadWriteCloser, opts Options) *Client {
 	_, _ = rand.Read(seed[:])
 
 	c := &Client{
-		log:            log,
-		conn:           rwc,
-		r:              bufio.NewReader(rwc),
-		w:              bufio.NewWriter(rwc),
-		idPrefix:       hex.EncodeToString(seed[:]),
-		sessionTimeout: opts.SessionTimeout,
-		pending:        make(map[string]chan pendingReply),
-		events:         make(map[string][]EventHandler),
-		control:        make(chan hvchannel.Envelope, 4),
-		done:           make(chan struct{}),
+		log:             log,
+		conn:            rwc,
+		r:               bufio.NewReader(rwc),
+		w:               bufio.NewWriter(rwc),
+		idPrefix:        hex.EncodeToString(seed[:]),
+		sessionTimeout:  opts.SessionTimeout,
+		registryTimeout: opts.RegistryTimeout,
+		pending:         make(map[string]chan pendingReply),
+		events:          make(map[string][]EventHandler),
+		control:         make(chan hvchannel.Envelope, 4),
+		done:            make(chan struct{}),
 	}
 	if c.sessionTimeout == 0 {
 		c.sessionTimeout = DefaultSessionTimeout
+	}
+	if c.registryTimeout == 0 {
+		c.registryTimeout = DefaultRegistryTimeout
 	}
 	go c.readLoop()
 	// The read loop blocks in Read, where a context cannot reach it. Closing
@@ -245,7 +298,7 @@ func (c *Client) call(ctx context.Context, kind string, payload, out any) error 
 		return fmt.Errorf("%w: %q", ErrBadKind, kind)
 	}
 
-	id := c.idPrefix + "-" + strconv.FormatUint(c.nextID.Add(1), 10)
+	id := c.newID()
 	data, err := weavewire.EncodeCommand(id, payload)
 	if err != nil {
 		return err
@@ -268,7 +321,9 @@ func (c *Client) call(ctx context.Context, kind string, payload, out any) error 
 		c.mu.Unlock()
 	}()
 
-	if err := c.send(address, kind, data); err != nil {
+	// The envelope carries the command's id too, so core can answer for a
+	// module that cannot (delivery.failed) and still reach this waiter.
+	if err := c.send(address, kind, id, data); err != nil {
 		return err
 	}
 
@@ -302,6 +357,12 @@ func (c *Client) call(ctx context.Context, kind string, payload, out any) error 
 // half of a stream (exec stdin chunks), where a per-chunk round trip would
 // serialise the stream to one chunk per latency period.
 func (c *Client) Notify(kind string, payload any) error {
+	return c.notify(kind, "", payload)
+}
+
+// notify is Notify with an envelope id, so core's delivery.failed for the
+// frame can be routed to whatever the id names (an exec session's input).
+func (c *Client) notify(kind, envID string, payload any) error {
 	address, ok := weavewire.AddressOf(kind)
 	if !ok || weavewire.IsResult(kind) {
 		return fmt.Errorf("%w: %q", ErrBadKind, kind)
@@ -310,10 +371,15 @@ func (c *Client) Notify(kind string, payload any) error {
 	if err != nil {
 		return err
 	}
-	return c.send(address, kind, data)
+	return c.send(address, kind, envID, data)
 }
 
-func (c *Client) send(address, kind string, data []byte) error {
+// newID mints a correlation id unique to this client.
+func (c *Client) newID() string {
+	return c.idPrefix + "-" + strconv.FormatUint(c.nextID.Add(1), 10)
+}
+
+func (c *Client) send(address, kind, id string, data []byte) error {
 	c.mu.Lock()
 	if c.closed {
 		err := c.cause
@@ -324,7 +390,7 @@ func (c *Client) send(address, kind string, data []byte) error {
 
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	return c.writeFrame(hvchannel.Envelope{Module: address, Kind: kind, Data: data})
+	return c.writeFrame(hvchannel.Envelope{Module: address, Kind: kind, Data: data, ID: id})
 }
 
 // writeFrame writes and flushes one envelope. The caller holds wmu.
@@ -403,7 +469,18 @@ func (c *Client) route(env hvchannel.Envelope) {
 		c.log.Debug("weaveclient: reply with no waiter", "kind", env.Kind, "id", res.ID)
 		return
 	}
-	ch <- pendingReply{res: res} // buffered; the waiter may have gone, but never blocks the loop
+	c.deliver(ch, pendingReply{res: res})
+}
+
+// deliver hands a waiter its answer without ever blocking the read loop. The
+// slot is buffered for one answer; a second for the same id (a guest replying
+// after core already said the frame was undeliverable) has nobody to go to.
+func (c *Client) deliver(ch chan pendingReply, r pendingReply) {
+	select {
+	case ch <- r:
+	default:
+		c.log.Debug("weaveclient: a second answer for one call dropped")
+	}
 }
 
 // shutdown ends the channel once, recording why and releasing every waiter.
@@ -432,10 +509,12 @@ func (c *Client) shutdown(cause error) {
 // pendingReply is what a waiting call receives: either the guest's own result,
 // or a host-side error that ended the wait before one arrived. The two are
 // separate fields because they mean different things to a caller — the guest
-// declining an operation is not the same as never having been asked.
+// declining an operation is not the same as never having been asked. A
+// modules.list waiter receives snap instead of res.
 type pendingReply struct {
-	res weavewire.Result
-	err error
+	res  weavewire.Result
+	snap *ModulesSnapshot
+	err  error
 }
 
 // GuestError is an operation the guest refused or failed, as opposed to a

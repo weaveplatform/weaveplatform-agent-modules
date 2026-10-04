@@ -31,8 +31,22 @@ func wireOpts(
 	svcs ...weavemodule.Service,
 ) *weaveclient.Client {
 	t.Helper()
+	client, _ := wireCore(t, opts, false, svcs...)
+	return client
+}
+
+// wireCore is wireOpts returning the core too, for a test that changes its
+// registry; legacy makes it a core from before weave-agent v0.9.2.
+func wireCore(
+	t *testing.T,
+	opts weaveclient.Options,
+	legacy bool,
+	svcs ...weavemodule.Service,
+) (*weaveclient.Client, *weavemoduletest.Core) {
+	t.Helper()
 	guestConn, hostConn := net.Pipe()
 	core := weavemoduletest.NewCore(guestConn, nil)
+	core.Legacy = legacy
 	for _, svc := range svcs {
 		core.Serve(t, svc)
 	}
@@ -45,7 +59,7 @@ func wireOpts(
 		cancel()
 		_ = core.Close()
 	})
-	return client
+	return client, core
 }
 
 func timeout(t *testing.T) context.Context {
@@ -180,8 +194,13 @@ func TestClipboardSetRefusesWhatCannotFit(t *testing.T) {
 // With nobody at the console core has no clipboard or display module to route
 // to and drops the command. The host gets a clear, matchable error instead
 // of a hang — and session, which runs as system, still answers.
+//
+// This is a core from before weave-agent v0.9.2, which says nothing about a
+// frame it cannot deliver: silence and the session timeout are all there is.
+// TestConsoleCapabilitiesWaitingForSession is the same guest under a core
+// that says why.
 func TestConsoleCapabilitiesWithNobodyLoggedIn(t *testing.T) {
-	client := wireOpts(t, weaveclient.Options{SessionTimeout: 50 * time.Millisecond},
+	client, _ := wireCore(t, weaveclient.Options{SessionTimeout: 50 * time.Millisecond}, true,
 		weavesession.NewService(&consoleSession{}))
 	ctx := timeout(t)
 
@@ -226,8 +245,10 @@ func TestConsoleCapabilitiesWithNobodyLoggedIn(t *testing.T) {
 // The caller's own deadline on a console call means the same thing; a
 // cancellation is the caller's and stays one; system capabilities are not
 // touched.
+//
+// A core from before weave-agent v0.9.2, so silence is all there is.
 func TestNoSessionAndTheCallersContext(t *testing.T) {
-	client := wireOpts(t, weaveclient.Options{SessionTimeout: -1})
+	client, _ := wireCore(t, weaveclient.Options{SessionTimeout: -1}, true)
 
 	short, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

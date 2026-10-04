@@ -215,12 +215,222 @@ func TestCoreRoutesByAddressAndGates(t *testing.T) {
 		t.Fatalf("the right key was refused: %s", result.Reason)
 	}
 
-	// No module answers to this address: dropped, as core drops it.
+	// No module answers to this address: core says so, now that the host
+	// has authenticated.
 	send("weave.exec", weavewire.KindExecStart, cmd)
+	if env := recv(); env.Module != hvchannel.ControlModule ||
+		env.Kind != hvchannel.KindDeliveryFailed {
+		t.Fatalf("an undeliverable frame answered with %s/%s", env.Module, env.Kind)
+	}
 	send("weave.time", weavewire.KindTimeGet, cmd)
 	env := recv()
 	if env.Module != "weave.time" || env.Kind != weavewire.ResultKind(weavewire.KindTimeGet) {
 		t.Fatalf("got %s/%s", env.Module, env.Kind)
+	}
+}
+
+// rawHost is the host end of a channel to a Core, frame by frame.
+type rawHost struct {
+	t *testing.T
+	r *bufio.Reader
+	w *bufio.Writer
+}
+
+func newRawHost(
+	t *testing.T,
+	trusted ed25519.PublicKey,
+	legacy bool,
+) (*rawHost, *weavemoduletest.Core) {
+	t.Helper()
+	guestConn, hostConn := net.Pipe()
+	core := weavemoduletest.NewCore(guestConn, trusted)
+	core.Legacy = legacy
+	core.Serve(t, timeService{})
+	go core.Run()
+	t.Cleanup(func() { _ = core.Close(); _ = hostConn.Close() })
+	return &rawHost{t: t, r: bufio.NewReader(hostConn), w: bufio.NewWriter(hostConn)}, core
+}
+
+func (h *rawHost) send(env hvchannel.Envelope) {
+	h.t.Helper()
+	if err := hvchannel.WriteEnvelope(h.w, env); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.w.Flush(); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *rawHost) recv() hvchannel.Envelope {
+	h.t.Helper()
+	env, err := hvchannel.ReadEnvelope(h.r)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return env
+}
+
+// authenticate runs the handshake with priv.
+func (h *rawHost) authenticate(priv ed25519.PrivateKey) {
+	h.t.Helper()
+	h.send(
+		hvchannel.Envelope{Module: hvchannel.ControlModule, Kind: hvchannel.KindAuthBegin, ID: "b"},
+	)
+	var challenge hvchannel.AuthChallenge
+	if env := h.recv(); env.ID != "b" || json.Unmarshal(env.Data, &challenge) != nil {
+		h.t.Fatalf("challenge %+v", env)
+	}
+	resp, _ := hvchannel.Sign(priv, challenge)
+	data, _ := json.Marshal(resp)
+	h.send(
+		hvchannel.Envelope{
+			Module: hvchannel.ControlModule,
+			Kind:   hvchannel.KindAuthResponse,
+			Data:   data,
+			ID:     "r",
+		},
+	)
+	var result hvchannel.AuthResult
+	if env := h.recv(); env.ID != "r" || json.Unmarshal(env.Data, &result) != nil || !result.OK {
+		h.t.Fatalf("auth result %+v", env)
+	}
+}
+
+func decodeSnapshot(t *testing.T, env hvchannel.Envelope) hvchannel.ModulesSnapshot {
+	t.Helper()
+	var snap hvchannel.ModulesSnapshot
+	if err := json.Unmarshal(env.Data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
+// The registry as weave-agent v0.9.2 serves it: refused before
+// authentication with the id echoed, then listed, pushed on change, and
+// consulted to say why a frame cannot be delivered.
+func TestCoreModuleRegistry(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	h, core := newRawHost(t, pub, false)
+
+	list := hvchannel.Envelope{
+		Module: hvchannel.ControlModule,
+		Kind:   hvchannel.KindModulesList,
+		ID:     "l1",
+	}
+	h.send(list)
+	var refusal hvchannel.AuthResult
+	if env := h.recv(); env.Kind != hvchannel.KindAuthResult || env.ID != "l1" ||
+		json.Unmarshal(env.Data, &refusal) != nil || refusal.OK {
+		t.Fatalf("pre-auth modules.list answered %+v", env)
+	}
+	// A hello for a missing module before authentication goes unanswered;
+	// the time result after it is the next frame.
+	h.send(hvchannel.Envelope{Module: "weave.presence", Kind: "weave.presence.hello", ID: "h"})
+
+	h.authenticate(priv)
+
+	list.ID = "l2"
+	h.send(list)
+	env := h.recv()
+	snap := decodeSnapshot(t, env)
+	if env.Kind != hvchannel.KindModulesListResult || env.ID != "l2" || snap.Revision == 0 ||
+		len(snap.Modules) != 1 || snap.Modules[0].Address != "weave.time" ||
+		snap.Modules[0].State != "running" || snap.Modules[0].Health.Status != hvchannel.HealthHealthy {
+		t.Fatalf("modules.list answered %s %+v", env.Kind, snap)
+	}
+
+	// A change is pushed, without an id, sorted by module id.
+	go core.SetModule(hvchannel.ModuleInfo{
+		ID: "a-clipboard", Address: "weave.clipboard", State: "waiting-for-session",
+		Detail: "no console user session",
+	})
+	env = h.recv()
+	pushed := decodeSnapshot(t, env)
+	if env.Kind != hvchannel.KindModulesChanged || env.ID != "" ||
+		pushed.Revision <= snap.Revision || len(pushed.Modules) != 2 ||
+		pushed.Modules[0].ID != "a-clipboard" || pushed.Modules[0].Since == "" ||
+		pushed.Modules[0].Health.Status != hvchannel.HealthUnknown ||
+		pushed.Modules[0].Capabilities == nil {
+		t.Fatalf("pushed %s %+v", env.Kind, pushed)
+	}
+
+	cmd, _ := weavewire.EncodeCommand("c", nil)
+	cases := []struct {
+		module, reason, state string
+		setup                 func()
+	}{
+		{module: "weave.exec", reason: hvchannel.ReasonNotInstalled},
+		{
+			module: "weave.clipboard",
+			reason: hvchannel.ReasonNotRunning,
+			state:  "waiting-for-session",
+		},
+		{
+			module: "weave.time",
+			reason: hvchannel.ReasonBusy,
+			setup:  func() { core.SetBusy("weave.time", true) },
+		},
+	}
+	for _, c := range cases {
+		if c.setup != nil {
+			c.setup()
+		}
+		h.send(
+			hvchannel.Envelope{
+				Module: c.module,
+				Kind:   c.module + ".op",
+				Data:   cmd,
+				ID:     "d-" + c.module,
+			},
+		)
+		env := h.recv()
+		var df hvchannel.DeliveryFailed
+		if env.Kind != hvchannel.KindDeliveryFailed || env.ID != "d-"+c.module ||
+			json.Unmarshal(env.Data, &df) != nil || df.Reason != c.reason || df.State != c.state ||
+			df.Module != c.module || df.Kind != c.module+".op" {
+			t.Fatalf("%s: %s %s %+v", c.module, env.Kind, env.ID, df)
+		}
+	}
+	core.SetBusy("weave.time", false)
+
+	go core.RemoveModule("a-clipboard")
+	if snap := decodeSnapshot(
+		t,
+		h.recv(),
+	); len(snap.Modules) != 1 ||
+		snap.Revision <= pushed.Revision {
+		t.Fatalf("after remove %+v", snap)
+	}
+	if got := core.Modules(); len(got.Modules) != 1 {
+		t.Fatalf("Modules() = %+v", got)
+	}
+	go core.PushModules()
+	if env := h.recv(); env.Kind != hvchannel.KindModulesChanged {
+		t.Fatalf("PushModules sent %s", env.Kind)
+	}
+}
+
+// A Legacy core is weave-agent before v0.9.2: modules.list is ignored, ids
+// are not echoed, and an undeliverable frame is dropped in silence.
+func TestCoreLegacy(t *testing.T) {
+	h, core := newRawHost(t, nil, true)
+	cmd, _ := weavewire.EncodeCommand("c", nil)
+	h.send(
+		hvchannel.Envelope{
+			Module: hvchannel.ControlModule,
+			Kind:   hvchannel.KindModulesList,
+			ID:     "l",
+		},
+	)
+	h.send(
+		hvchannel.Envelope{Module: "weave.exec", Kind: weavewire.KindExecStart, Data: cmd, ID: "x"},
+	)
+	core.SetModule(hvchannel.ModuleInfo{ID: "extra", Address: "weave.extra"})
+	h.send(
+		hvchannel.Envelope{Module: hvchannel.ControlModule, Kind: hvchannel.KindAuthBegin, ID: "b"},
+	)
+	if env := h.recv(); env.Kind != hvchannel.KindAuthChallenge || env.ID != "" {
+		t.Fatalf("legacy core answered %s id %q", env.Kind, env.ID)
 	}
 }
 

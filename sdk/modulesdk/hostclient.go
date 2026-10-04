@@ -31,6 +31,7 @@ type hostClient struct {
 	events    agentv1.EventBusServiceClient
 	logs      agentv1.LogServiceClient
 	watchdog  agentv1.WatchdogServiceClient
+	registry  agentv1.RegistryServiceClient
 
 	streamedLog *slog.Logger
 
@@ -75,6 +76,7 @@ func dialHost(network, addr, token string, log *slog.Logger) (*hostClient, error
 		events:    agentv1.NewEventBusServiceClient(conn),
 		logs:      agentv1.NewLogServiceClient(conn),
 		watchdog:  agentv1.NewWatchdogServiceClient(conn),
+		registry:  agentv1.NewRegistryServiceClient(conn),
 	}
 	// Host.Log streams to core's LogService with the stderr logger as the
 	// pre-Init / on-failure fallback.

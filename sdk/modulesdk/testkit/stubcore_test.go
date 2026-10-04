@@ -52,6 +52,11 @@ func TestHandshakeAndLifecycle(t *testing.T) {
 	if proc.Line.Protocol != 1 {
 		t.Fatalf("module claimed protocol %d, want 1", proc.Line.Protocol)
 	}
+	// Core lists the module it launched in its registry.
+	if _, mods := proc.Data.Registry(); len(mods) != 1 || mods[0].ID != "toy" ||
+		mods[0].Address != "toy" || mods[0].State != "running" {
+		t.Errorf("registry = %+v, want the launched module", mods)
+	}
 
 	initResp, err := core.Init(ctx, proc)
 	if err != nil {

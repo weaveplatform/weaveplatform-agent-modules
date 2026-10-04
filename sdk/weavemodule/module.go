@@ -290,4 +290,5 @@ func (absentHost) Policy() modulesdk.PolicyReader { return nil }
 func (absentHost) Store(string) modulesdk.Store   { return nil }
 func (absentHost) Events() modulesdk.Events       { return nil }
 func (absentHost) UI() modulesdk.UIBroker         { return nil }
+func (absentHost) Registry() modulesdk.Registry   { return nil }
 func (absentHost) Log() *slog.Logger              { return slog.New(slog.DiscardHandler) }
