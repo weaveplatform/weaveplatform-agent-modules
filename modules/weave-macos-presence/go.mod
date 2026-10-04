@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/deploymenttheory/go-bindings-macosplatform v0.20.1
-	github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.0.0-00010101000000-000000000000
+	github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.1
 )
 
 require (
