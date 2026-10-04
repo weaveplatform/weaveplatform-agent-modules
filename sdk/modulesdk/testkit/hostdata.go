@@ -6,8 +6,12 @@
 package testkit
 
 import (
+	"slices"
+	"strings"
 	"sync"
 	"time"
+
+	agentv1 "github.com/weaveplatform/weaveplatform-agent-modules/sdk/gen/go/weave/agent/v1"
 )
 
 // HostData is the in-memory state behind the stub host services. Tests
@@ -30,6 +34,12 @@ type HostData struct {
 
 	// Sends records everything the module sent via Transport.
 	sends []SentMessage
+
+	// registry is what RegistryService serves, by module id.
+	registryRevision    uint64
+	registry            map[string]RegistryEntry
+	registryWatchers    []chan struct{}
+	registryUnsupported bool
 
 	// Device is what WhoAmI returns.
 	Device DeviceInfo
@@ -66,8 +76,9 @@ type subscriber struct {
 // NewHostData returns empty backing state with a default device identity.
 func NewHostData() *HostData {
 	return &HostData{
-		store:  make(map[string][]byte),
-		Device: DeviceInfo{DeviceID: "test-device", Tenant: "test"},
+		store:    make(map[string][]byte),
+		registry: make(map[string]RegistryEntry),
+		Device:   DeviceInfo{DeviceID: "test-device", Tenant: "test"},
 	}
 }
 
@@ -180,6 +191,91 @@ func (d *HostData) Sends() []SentMessage {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]SentMessage(nil), d.sends...)
+}
+
+// RegistryEntry is one module in the stub's RegistryService.
+type RegistryEntry struct {
+	ID      string
+	Version string
+	// Address defaults to ID.
+	Address string
+	// State defaults to "running".
+	State        string
+	Health       agentv1.Health_Status
+	HealthReason string
+}
+
+// SetRegistryModule adds e to the registry, or replaces the entry with its
+// ID, moving the revision and waking watchers. StubCore.Launch adds the
+// launched module itself, as core lists every module it supervises.
+func (d *HostData) SetRegistryModule(e RegistryEntry) {
+	if e.Address == "" {
+		e.Address = e.ID
+	}
+	if e.State == "" {
+		e.State = "running"
+	}
+	d.changeRegistry(func() { d.registry[e.ID] = e })
+}
+
+// RemoveRegistryModule drops the entry with id.
+func (d *HostData) RemoveRegistryModule(id string) {
+	d.changeRegistry(func() { delete(d.registry, id) })
+}
+
+// SetRegistryUnsupported makes RegistryService answer Unimplemented, as a
+// core from before weave-agent v0.9.2 does.
+func (d *HostData) SetRegistryUnsupported(unsupported bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.registryUnsupported = unsupported
+}
+
+// Registry returns the revision and the entries, sorted by id.
+func (d *HostData) Registry() (uint64, []RegistryEntry) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]RegistryEntry, 0, len(d.registry))
+	for _, e := range d.registry {
+		out = append(out, e)
+	}
+	slices.SortFunc(out, func(a, b RegistryEntry) int { return strings.Compare(a.ID, b.ID) })
+	return d.registryRevision, out
+}
+
+func (d *HostData) hasRegistryModule(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.registry[id]
+	return ok
+}
+
+func (d *HostData) changeRegistry(f func()) {
+	d.mu.Lock()
+	f()
+	d.registryRevision++
+	watchers := d.registryWatchers
+	d.mu.Unlock()
+	for _, w := range watchers {
+		select {
+		case w <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (d *HostData) addRegistryWatcher() chan struct{} {
+	ch := make(chan struct{}, 1)
+	d.mu.Lock()
+	d.registryWatchers = append(d.registryWatchers, ch)
+	d.mu.Unlock()
+	return ch
+}
+
+func (d *HostData) registrySupported() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return !d.registryUnsupported
 }
 
 // topicMatches implements exact and "prefix.*" glob matching.

@@ -69,6 +69,10 @@ type Host interface {
 	Events() Events
 	UI() UIBroker
 	Log() *slog.Logger
+	// Registry is core's read-only list of the modules installed beside
+	// this one, for a module that wants to know whether a peer is there
+	// (and running) before it sends to it.
+	Registry() Registry
 }
 
 // Scheduled is optionally implemented by a module that wants recurring

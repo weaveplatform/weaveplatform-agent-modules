@@ -23,6 +23,7 @@ func registerHostServices(s *grpc.Server, data *HostData, moduleID string) {
 	agentv1.RegisterPolicyServiceServer(s, &policyServer{data: data})
 	agentv1.RegisterStoreServiceServer(s, &storeServer{data: data})
 	agentv1.RegisterEventBusServiceServer(s, &eventsServer{data: data, moduleID: moduleID})
+	agentv1.RegisterRegistryServiceServer(s, &registryServer{data: data})
 }
 
 // tokenInterceptors reject any call not presenting the expected token —
@@ -243,4 +244,66 @@ func (s *eventsServer) Subscribe(
 			}
 		}
 	}
+}
+
+// --- Registry ---
+
+type registryServer struct {
+	agentv1.UnimplementedRegistryServiceServer
+	data *HostData
+}
+
+func (s *registryServer) List(
+	context.Context,
+	*agentv1.RegistryListRequest,
+) (*agentv1.RegistrySnapshot, error) {
+	if !s.data.registrySupported() {
+		//nolint:wrapcheck // a gRPC status is the handler's contract
+		return nil, status.Error(
+			codes.Unimplemented,
+			"unknown service weave.agent.v1.RegistryService",
+		)
+	}
+	return s.snapshot(), nil
+}
+
+func (s *registryServer) Watch(
+	_ *agentv1.RegistryWatchRequest,
+	stream agentv1.RegistryService_WatchServer,
+) error {
+	if !s.data.registrySupported() {
+		//nolint:wrapcheck // a gRPC status is the handler's contract
+		return status.Error(codes.Unimplemented, "unknown service weave.agent.v1.RegistryService")
+	}
+	// Subscribed before the first snapshot, as core does, so a change
+	// between the two is not lost.
+	notify := s.data.addRegistryWatcher()
+	for {
+		if err := stream.Send(s.snapshot()); err != nil {
+			return fmt.Errorf("testkit: sending registry: %w", err)
+		}
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case <-notify:
+		}
+	}
+}
+
+func (s *registryServer) snapshot() *agentv1.RegistrySnapshot {
+	rev, entries := s.data.Registry()
+	out := &agentv1.RegistrySnapshot{
+		Revision: rev,
+		Modules:  make([]*agentv1.RegisteredModule, 0, len(entries)),
+	}
+	for _, e := range entries {
+		m := &agentv1.RegisteredModule{
+			Id: e.ID, Version: e.Version, Address: e.Address, State: e.State,
+		}
+		if e.Health != agentv1.Health_STATUS_UNSPECIFIED || e.HealthReason != "" {
+			m.Health = &agentv1.Health{Status: e.Health, Reason: e.HealthReason}
+		}
+		out.Modules = append(out.Modules, m)
+	}
+	return out
 }

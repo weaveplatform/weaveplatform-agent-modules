@@ -68,6 +68,9 @@ type fakeHost struct {
 	// notifyFails makes WatchdogService.Notify end the stream at once, so
 	// the client's next Send fails.
 	notifyFails bool
+	// noRegistry makes RegistryService answer Unimplemented, as a core
+	// from before weave-agent v0.9.2 does.
+	noRegistry bool
 }
 
 func newFakeHost(t *testing.T) *fakeHost {
@@ -109,6 +112,7 @@ func newFakeHost(t *testing.T) *fakeHost {
 	agentv1.RegisterEventBusServiceServer(h.srv, eventsSrv{h: h})
 	agentv1.RegisterLogServiceServer(h.srv, logSrv{h: h})
 	agentv1.RegisterWatchdogServiceServer(h.srv, watchdogSrv{h: h})
+	agentv1.RegisterRegistryServiceServer(h.srv, registrySrv{h: h})
 	go h.srv.Serve(lis) //nolint:errcheck
 	t.Cleanup(h.srv.Stop)
 	return h
@@ -361,4 +365,60 @@ func (h *fakeHost) locked(f func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	f()
+}
+
+type registrySrv struct {
+	agentv1.UnimplementedRegistryServiceServer
+	h *fakeHost
+}
+
+func registryAt(rev uint64) *agentv1.RegistrySnapshot {
+	return &agentv1.RegistrySnapshot{Revision: rev, Modules: []*agentv1.RegisteredModule{
+		{
+			Id: "weave-linux-clipboard", Version: "0.4.0", Address: "weave.clipboard",
+			State: "waiting-for-session",
+		},
+		{
+			Id: "weave-linux-power", Version: "1.2.3", Address: "weave.power", State: "running",
+			Health: &agentv1.Health{
+				Status:  agentv1.Health_STATUS_DEGRADED,
+				Reason:  "slow",
+				Details: map[string]string{"a": "b"},
+			},
+		},
+	}}
+}
+
+func (s registrySrv) unimplemented() bool {
+	s.h.mu.Lock()
+	defer s.h.mu.Unlock()
+	return s.h.noRegistry
+}
+
+func (s registrySrv) List(
+	context.Context,
+	*agentv1.RegistryListRequest,
+) (*agentv1.RegistrySnapshot, error) {
+	if s.unimplemented() {
+		return nil, status.Error(codes.Unimplemented, "unknown service")
+	}
+	return registryAt(3), nil
+}
+
+// Watch sends revisions 1 and 2, then holds the stream open until the client
+// goes away.
+func (s registrySrv) Watch(
+	_ *agentv1.RegistryWatchRequest,
+	stream agentv1.RegistryService_WatchServer,
+) error {
+	if s.unimplemented() {
+		return status.Error(codes.Unimplemented, "unknown service")
+	}
+	for rev := uint64(1); rev <= 2; rev++ {
+		if err := stream.Send(registryAt(rev)); err != nil {
+			return err
+		}
+	}
+	<-stream.Context().Done()
+	return nil
 }

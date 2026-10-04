@@ -104,6 +104,14 @@ func (c *StubCore) Launch(ctx context.Context, binPath string) (*ModuleProc, err
 	if err != nil {
 		return nil, err
 	}
+	// Core lists every module it supervises, the one asking included.
+	if c.ModuleID != "" && !data.hasRegistryModule(c.ModuleID) {
+		data.SetRegistryModule(RegistryEntry{
+			ID:     c.ModuleID,
+			State:  "running",
+			Health: agentv1.Health_STATUS_UNSPECIFIED,
+		})
+	}
 	hostSrv := grpc.NewServer(tokenInterceptors(token)...)
 	registerHostServices(hostSrv, data, c.ModuleID)
 	go hostSrv.Serve(hostLis) //nolint:errcheck // exits with GracefulStop

@@ -35,32 +35,34 @@ The two sides agree on the wire, not on a Go package. Three things hold that agr
 | Check | Where |
 |---|---|
 | `sdk/gen` is exactly what core's `proto/` generates at the pinned release | quality gate, `sdk/gen matches agent-core proto/` (`make sdk-gen`) |
-| a module built on this sdk runs under the **released** `weave-agent` and core reports it running and healthy, on Linux, macOS and Windows | quality gate, `compat` (`make compat`) |
+| a module built on this sdk runs under the **released** `weave-agent`, finds itself through core's `RegistryService`, and core reports it running and healthy, on Linux, macOS and Windows | quality gate, `compat` (`make compat`) |
 | breaking proto changes need a new package (`weave/agent/v2`) | core's `buf breaking` |
 
 Two pieces of the wire are hand-written rather than generated, and exist on both sides: the
 handshake line ([`protocol/handshake`](protocol/handshake)) and the hypervisor channel
-framing ([`protocol/hvchannel`](protocol/hvchannel)). Nothing negotiates either, so a change
-to one is a protocol change and must land in core as well. The compat job catches a handshake
+framing ([`protocol/hvchannel`](protocol/hvchannel)), including its control frames: the
+authentication handshake, the module registry (`modules.list`, `modules.list.result`,
+`modules.changed`) and `delivery.failed`, correlated by the envelope's optional `id`. Nothing
+negotiates either, so a change to one is a protocol change and must land in core as well. The compat job catches a handshake
 mismatch; it cannot catch an hvchannel one, which only a host talking to a guest exercises.
 
 ## Packages
 
 | Package | What |
 |---|---|
-| `modulesdk` | The module runtime: implement `Module`, call `modulesdk.Serve(m)`. Handshake, lifecycle dispatch, health, the watchdog and the `Host` client are handled for you |
-| `modulesdk/testkit` | `StubCore`, which performs the core side of the handshake against a real module binary, and in-memory host services |
+| `modulesdk` | The module runtime: implement `Module`, call `modulesdk.Serve(m)`. Handshake, lifecycle dispatch, health, the watchdog and the `Host` client (including `Host.Registry()`, the modules installed beside yours) are handled for you |
+| `modulesdk/testkit` | `StubCore`, which performs the core side of the handshake against a real module binary, and in-memory host services, a module registry among them |
 | `gen/go/weave/agent/v1` | Protocol 1, generated from agent-core's `proto/`. Core's operator socket (`weave/control/v1`) is deliberately absent: it is not a module contract |
 | `protocol/handshake` | The environment core sets, the one stdout line a module answers with, exit code 78 for a clean refusal |
 | `protocol/ipc` | Unix sockets and Windows named pipes behind one Listen/Dial seam, with per-OS peer credentials |
-| `protocol/hvchannel` | The hypervisor channel's framing, envelope and Ed25519 challenge/response |
+| `protocol/hvchannel` | The hypervisor channel's framing, envelope and control frames: Ed25519 challenge/response, the module registry, `delivery.failed` |
 | `protocol/manifest` | Types and validation for the module manifest, the signed channel manifest and detached signatures. Verification lives in core |
 | `platform` | Host info, well-known paths, session helpers |
 | `config`, `werror`, `wlog` | Config document loading, error sentinels, `slog` construction |
 | `weavewire` | The weave capability wire contract: capabilities, kinds, request and response payloads. The only place it is defined |
-| `weavemodule`, `weavemodule/weavemoduletest` | The runtime every weave capability module is built on: one `Service` per capability, addressed as `weave.<capability>` |
+| `weavemodule`, `weavemodule/weavemoduletest` | The runtime every weave capability module is built on: one `Service` per capability, addressed as `weave.<capability>`. `weavemoduletest` adds a fake host with a settable registry, and a `Core` that serves modules over a real channel and speaks the registry and `delivery.failed` as weave-agent v0.9.2 does |
 | `weaveagent` | The dispatcher that routes hypervisor channel requests to handlers and orders replies |
-| `weaveclient` | The host-side client for the same wire, for CLIs that drive a guest |
+| `weaveclient` | The host-side client for the same wire, for CLIs that drive a guest: typed calls, exec sessions, authentication, the guest's module registry (`Modules`, `OnModulesChanged`, `Installed`), and typed errors (`ErrModuleNotInstalled`, `ErrModuleNotRunning`, `ErrModuleBusy`) for a call core could not deliver |
 | `weaveclipboard`, `weavedisplay`, `weaveexec`, `weavemetrics`, `weavepolicy`, `weavepower`, `weavepresence`, `weavesession`, `weavetime` | One OS-neutral `Service` per capability; each `modules/weave-<os>-<capability>` supplies only its OS backend |
 
 ## Writing a module

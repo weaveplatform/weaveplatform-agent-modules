@@ -123,6 +123,7 @@ Everything a module needs from the platform comes through `Host`:
 | `Identity()` | who the device is, and module-scoped credentials | you never see private keys |
 | `UI().Declare(...)` | declare surfaces as data, during Init | the portal renders; modules never draw. After Init it returns `ErrSurfacesAfterInit` |
 | `Log()` | `*slog.Logger` | streamed to core and attributed to your module |
+| `Registry()` | the modules installed beside yours: id, version, address, state, health | read-only; `List` now, `Watch` for every change. weave-agent v0.9.2 and later; older cores answer `ErrRegistryUnsupported` |
 
 Errors from host calls map onto `werror` sentinels (`ErrNotFound`, `ErrUnavailable`,
 `ErrDenied`, `ErrProtocol`), so branch with `errors.Is` rather than on gRPC codes.
@@ -145,6 +146,40 @@ Builds of one capability for different guest operating systems share one address
 (`weave.exec` for `weave-linux-exec`, `weave-macos-exec` and `weave-windows-exec`), so the
 host reaches them without knowing the guest OS. Core refuses to register a second module
 under an address already taken.
+
+### Checking for another module
+
+Modules never import each other, but one may depend on another being there: a module that
+hands work to `weave.exec`, or one that only makes sense beside a particular product module.
+Ask core's registry rather than sending and waiting to see whether anything answers:
+
+```go
+snap, err := host.Registry().List(ctx)
+switch {
+case errors.Is(err, modulesdk.ErrRegistryUnsupported):
+	// weave-agent before v0.9.2: no registry. Send, and treat silence as absence.
+case err != nil:
+	return err
+default:
+	peer, ok := snap.Module("weave.exec") // by address, or by id
+	switch {
+	case !ok:
+		// not installed: report degraded with a reason, not unhealthy
+	case !peer.Running():
+		// installed but starting, waiting for a console session, crashed or stopped;
+		// peer.State says which, and Watch will say when it changes
+	}
+}
+```
+
+`Watch(ctx)` yields the registry at once and again after every change (a module added or
+removed, or one's state or health changing), coalescing so a slow reader skips to the
+latest. Run it on a module-lifetime context, as for `Policy().Watch`. A snapshot's
+`Revision` only rises for the life of a core process; of two, keep the higher.
+
+The registry shows what a module may act on — identity, address, lifecycle state and health
+— and nothing about processes or placement. Every module may read it: it says nothing a
+module could not learn by sending to an address and seeing what came back.
 
 ### Health is a vocabulary, not a boolean
 
@@ -170,10 +205,14 @@ Three levels, from fastest to most real:
 
 1. **In process.** `weavemodule/weavemoduletest` gives a capability module a fake host and
    transport; `testkit.NewHostData()` backs the in-memory host services for a plain
-   `modulesdk` module. Unit-test the module's logic without processes.
+   `modulesdk` module. Unit-test the module's logic without processes. Both let a test set
+   which other modules are installed: `host.Modules.Set(...)` (or `Fail` with
+   `modulesdk.ErrRegistryUnsupported` for an older core) on a `weavemoduletest.Host`, and
+   `HostData.SetRegistryModule` on testkit's.
 2. **Your built binary under `testkit.StubCore`.** It spawns the binary, performs the real
    core-side handshake, and drives Init, Start, Health and Shutdown. Its `HostData` records
-   every store write, event and transport send, so integration tests assert real behaviour:
+   every store write, event and transport send, so integration tests assert real behaviour.
+   Its registry lists the launched module, as core's does, beside whatever the test adds:
 
    ```go
    core := &testkit.StubCore{ModuleID: "weave-linux-time"}
@@ -183,7 +222,9 @@ Three levels, from fastest to most real:
 
 3. **Under the released `weave-agent`.** The quality gate's `compat` job does this for
    [`internal/compatfixture`](../internal/compatfixture) on Linux, macOS and Windows; run it
-   locally with `make compat AGENT_DIR=<extracted release archive>`. Release builds of core
+   locally with `make compat AGENT_DIR=<extracted release archive>`. The fixture reports
+   healthy only once core's `RegistryService` lists it, so the job also proves this sdk's
+   registry client against the real service. Release builds of core
    verify every module before exec, so the test signs a channel manifest naming the
    fixture's SHA-256 with core's own `weavemanifest`, and starts core with `--channel-dir`
    and `--manifest-root-pub`: the offline-install verification path, which is the same on

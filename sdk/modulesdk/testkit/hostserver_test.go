@@ -191,3 +191,61 @@ func TestHostServices(t *testing.T) {
 		t.Fatalf("Receive yielded %v, want the context's error", err)
 	}
 }
+
+func TestRegistryService(t *testing.T) {
+	data := NewHostData()
+	conn := serveHost(t, data)
+	ctx := withToken(t)
+	reg := agentv1.NewRegistryServiceClient(conn)
+
+	data.SetRegistryModule(RegistryEntry{ID: "weave-linux-power", Address: "weave.power"})
+	data.SetRegistryModule(RegistryEntry{
+		ID: "weave-linux-clipboard", Address: "weave.clipboard", State: "waiting-for-session",
+		Health: agentv1.Health_STATUS_DEGRADED, HealthReason: "why",
+	})
+	data.SetRegistryModule(RegistryEntry{ID: "toy"})
+	snap, err := reg.List(ctx, &agentv1.RegistryListRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mods := snap.GetModules()
+	if snap.GetRevision() != 3 || len(mods) != 3 || mods[0].GetId() != "toy" ||
+		mods[0].GetAddress() != "toy" || mods[0].GetState() != "running" || mods[0].GetHealth() != nil ||
+		mods[1].GetId() != "weave-linux-clipboard" ||
+		mods[1].GetHealth().GetStatus() != agentv1.Health_STATUS_DEGRADED ||
+		mods[1].GetHealth().GetReason() != "why" {
+		t.Fatalf("List = %v", snap)
+	}
+
+	wctx, cancel := context.WithCancel(ctx)
+	stream, err := reg.Watch(wctx, &agentv1.RegistryWatchRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, err := stream.Recv(); err != nil || first.GetRevision() != 3 {
+		t.Fatalf("first watched = %v, %v", first, err)
+	}
+	data.RemoveRegistryModule("toy")
+	if next, err := stream.Recv(); err != nil || next.GetRevision() != 4 ||
+		len(next.GetModules()) != 2 {
+		t.Fatalf("after remove = %v, %v", next, err)
+	}
+	cancel()
+
+	data.SetRegistryUnsupported(true)
+	if _, err := reg.List(
+		ctx,
+		&agentv1.RegistryListRequest{},
+	); status.Code(
+		err,
+	) != codes.Unimplemented {
+		t.Fatalf("unsupported List = %v", err)
+	}
+	stream, err = reg.Watch(ctx, &agentv1.RegistryWatchRequest{})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("unsupported Watch = %v", err)
+	}
+}
