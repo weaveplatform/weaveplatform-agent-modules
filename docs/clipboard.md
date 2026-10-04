@@ -25,7 +25,7 @@ One list, in `weavewire.ClipboardFormats`, richest first:
 | `files` | `public.file-url`, one pasteboard item per file | `text/uri-list`, `x-special/gnome-copied-files` | `CF_HDROP` |
 | `image/png` | `public.png` | `image/png` | `PNG` (registered) |
 | `image/tiff` | `public.tiff` | `image/tiff` | `CF_TIFF` |
-| `application/pdf` | `com.adobe.pdf` | `application/pdf` | not held: Windows has no clipboard format applications share for PDF |
+| `application/pdf` | `com.adobe.pdf` | `application/pdf` | `Portable Document Format` (registered); reported `private`, since Windows has no PDF format applications share |
 | `text/rtf` | `public.rtf` | `text/rtf`, `application/rtf` | `Rich Text Format` (registered) |
 | `text/html` | `public.html` | `text/html` | `HTML Format` (registered; the CF_HTML header is added on set and removed on get) |
 | `text/plain` | `public.utf8-plain-text` | `text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain` | `CF_UNICODETEXT` (UTF-16; UTF-8 on the wire) |

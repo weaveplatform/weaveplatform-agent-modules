@@ -24,20 +24,26 @@ const (
 )
 
 // Registered format names: the ones Windows applications agree on for HTML,
-// RTF and PNG, which have no standard format number.
+// RTF and PNG, which have no standard format number, and the name PDF is held
+// under.
+//
+// No name for PDF is shared the way these are, so PDF is held under a name
+// registered for it, "Portable Document Format", which any application that
+// registers the same name shares: it round-trips host to guest to host, which
+// keeps a PDF from being dropped on its way through a Windows guest, and stat
+// reports it as private, since most Windows applications neither paste nor
+// copy it.
 var registeredNames = map[weavewire.ClipboardFormat]string{
 	weavewire.ClipboardHTML: "HTML Format",
 	weavewire.ClipboardRTF:  "Rich Text Format",
 	weavewire.ClipboardPNG:  "PNG",
+	weavewire.ClipboardPDF:  "Portable Document Format",
 }
 
 // clipboard is the console user's clipboard through the Win32 API. core
 // starts the module in the user's session on its interactive desktop
 // (winsta0\default); a service in session 0 has a clipboard of its own that
 // no user ever sees.
-//
-// PDF has no format Windows applications share, so it is neither offered nor
-// written.
 type clipboard struct {
 	w     winClipboard
 	run   func(func())
@@ -58,17 +64,17 @@ var natives = map[weavewire.ClipboardFormat]string{
 	weavewire.ClipboardRTF:   registeredNames[weavewire.ClipboardRTF],
 	weavewire.ClipboardPNG:   registeredNames[weavewire.ClipboardPNG],
 	weavewire.ClipboardTIFF:  "CF_TIFF",
+	weavewire.ClipboardPDF:   registeredNames[weavewire.ClipboardPDF],
 	weavewire.ClipboardFiles: "CF_HDROP",
 }
 
-// Support reports every canonical format the clipboard holds at once, under
-// its format name, and PDF as not held.
+// Support reports every canonical format held at once, under its format name,
+// and PDF's name as private to weave.
 func (c *clipboard) Support() weaveclipboard.Support {
 	s := weaveclipboard.CanonicalSupport(natives)
 	for i, f := range s.Formats {
 		if f.Format == weavewire.ClipboardPDF {
-			s.Formats[i].Held = false
-			s.Formats[i].Reason = "Windows has no clipboard format applications share for PDF"
+			s.Formats[i].Private = true
 		}
 	}
 	return s

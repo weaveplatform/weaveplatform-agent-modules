@@ -35,9 +35,12 @@ func TestWriteThenStatAndRead(t *testing.T) {
 	}
 	if want := []weavewire.ClipboardFormat{
 		weavewire.ClipboardText, weavewire.ClipboardHTML, weavewire.ClipboardRTF,
-		weavewire.ClipboardPNG, weavewire.ClipboardTIFF,
+		weavewire.ClipboardPNG, weavewire.ClipboardTIFF, weavewire.ClipboardPDF,
 	}; !slices.Equal(res.Written, want) {
-		t.Errorf("written %v, want %v: PDF has no shared Windows format", res.Written, want)
+		t.Errorf("written %v, want %v", res.Written, want)
+	}
+	if got := f.held(t, c.formatID(weavewire.ClipboardPDF)); string(got) != "%PDF" {
+		t.Errorf("Portable Document Format holds %q", got)
 	}
 	if res.ChangeToken != uint64(f.seq) || f.open {
 		t.Errorf("token %d, sequence %d, left open %v", res.ChangeToken, f.seq, f.open)
@@ -53,6 +56,7 @@ func TestWriteThenStatAndRead(t *testing.T) {
 	if want := []weavewire.ClipboardFormatInfo{
 		{Format: weavewire.ClipboardPNG},
 		{Format: weavewire.ClipboardTIFF},
+		{Format: weavewire.ClipboardPDF},
 		{Format: weavewire.ClipboardRTF},
 		{Format: weavewire.ClipboardHTML},
 		{Format: weavewire.ClipboardText},
@@ -71,6 +75,7 @@ func TestWriteThenStatAndRead(t *testing.T) {
 	for f, want := range map[weavewire.ClipboardFormat]string{
 		weavewire.ClipboardText: "héllo ✓", weavewire.ClipboardHTML: "<b>héllo</b>",
 		weavewire.ClipboardRTF: `{\rtf1 hi}`, weavewire.ClipboardPNG: "\x89PNG", weavewire.ClipboardTIFF: "II*\x00",
+		weavewire.ClipboardPDF: "%PDF",
 	} {
 		if read[f] != want {
 			t.Errorf("%s read back %q, want %q", f, read[f], want)
@@ -349,8 +354,8 @@ func TestWritesAreRefusedWithoutTheClipboardOpen(t *testing.T) {
 	<-done
 }
 
-// Every canonical format but PDF is held, under the format name applications
-// share for it.
+// Every canonical format is held, under the format name applications share
+// for it, and PDF under a name of weave's own, reported private.
 func TestSupportNamesEachFormat(t *testing.T) {
 	c, _ := backend(t)
 	s := c.Support()
@@ -358,9 +363,25 @@ func TestSupportNamesEachFormat(t *testing.T) {
 		t.Fatalf("support %+v", s)
 	}
 	for _, f := range s.Formats {
-		if pdf := f.Format == weavewire.ClipboardPDF; f.Held == pdf ||
-			(f.Held && f.Native == "") || (!f.Held && f.Reason == "") {
+		if !f.Held || f.Native == "" || f.Private != (f.Format == weavewire.ClipboardPDF) {
 			t.Errorf("%+v", f)
 		}
+	}
+	if pdf := s.Formats[3]; pdf.Format != weavewire.ClipboardPDF || pdf.Native != "Portable Document Format" {
+		t.Errorf("PDF %+v", pdf)
+	}
+}
+
+// PDF copied by another application under the same registered name is read
+// as PDF.
+func TestReadsAPDFAnotherApplicationCopied(t *testing.T) {
+	c, f := backend(t)
+	f.put(t, c.formatID(weavewire.ClipboardPDF), []byte("%PDF-1.7 from another application"))
+	got, err := c.Read(context.Background(), []weavewire.ClipboardFormat{weavewire.ClipboardPDF}, 1<<20)
+	if err != nil || len(got.Items) != 1 || string(got.Items[0].Data) != "%PDF-1.7 from another application" {
+		t.Fatalf("read %+v, %v", got.Items, err)
+	}
+	if id := c.formatID(weavewire.ClipboardPDF); f.regs["Portable Document Format"] != id || id == 0 {
+		t.Errorf("PDF registered as %d, %v", id, f.regs)
 	}
 }
