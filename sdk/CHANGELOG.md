@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.0...sdk/v0.2.1) (2026-10-04)
+
+
+### Features
+
+* **sdk:** module registry and undeliverable-message errors ([80cc770](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/80cc77088cc739bd30d889fda84712f57f17e4f6))
+* **sdk:** module registry and undeliverable-message errors in weaveclient ([3d9389d](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/3d9389dc2c2c46cb236aef5937b480be71c65dcd))
+* **sdk:** registry host service for modules ([d5109f2](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/d5109f27c793ae4d9e7f08292b5c06516e8b19cc))
+
 ## 0.2.0 (2026-10-03)
 
 
