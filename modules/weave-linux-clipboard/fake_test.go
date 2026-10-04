@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
-// The fake tools stand in for wl-paste, wl-copy and xclip, so the exec paths
+// The fake tools stand in for wl-paste and wl-copy, so the exec paths
 // run for real without a display server — and without ever touching the
 // clipboard of a machine that has one. They keep the "clipboard" in a
 // directory: targets lists what is offered, data/<key> holds each target's
@@ -38,27 +40,6 @@ cat > "$S/data/$k"
 printf '%s\n' "$2" > "$S/targets"
 `
 
-const fakeXclip = `#!/bin/sh
-S="$FAKE_CLIP"
-[ -f "$S/fail" ] && exit 2
-t="$4"
-k=$(printf '%s' "$t" | tr '/;= ' '____')
-case "$5" in
--o)
-	if [ "$t" = TARGETS ]; then
-		[ -s "$S/targets" ] || { echo "Error: target TARGETS not available" >&2; exit 1; }
-		cat "$S/targets"; exit 0
-	fi
-	[ -f "$S/data/$k" ] || exit 1
-	cat "$S/data/$k" ;;
--i)
-	rm -rf "$S/data"; mkdir -p "$S/data"
-	cat > "$S/data/$k"
-	printf 'TARGETS\n%s\n' "$t" > "$S/targets" ;;
-*) exit 64 ;;
-esac
-`
-
 // fakeClip is the fake tools' clipboard.
 type fakeClip struct{ dir string }
 
@@ -67,7 +48,7 @@ func installFake(t *testing.T) fakeClip {
 	t.Helper()
 	bin := t.TempDir()
 	for name, script := range map[string]string{
-		"wl-paste": fakeWlPaste, "wl-copy": fakeWlCopy, "xclip": fakeXclip,
+		"wl-paste": fakeWlPaste, "wl-copy": fakeWlCopy,
 	} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
@@ -122,26 +103,40 @@ func (f fakeClip) held(t *testing.T, target string) (string, bool) {
 
 func (f fakeClip) fail(t *testing.T) { f.write(t, "fail", "") }
 
-// wayland and x11 build the backend as core would start it in each kind of
-// session.
-func wayland(t *testing.T) *clipboard {
+// toolClipboard builds the backend as core would start it in a Wayland
+// session whose compositor has no data control and that has no X display:
+// through the wl-clipboard stand-ins.
+func toolClipboard(t *testing.T) *clipboard {
 	t.Helper()
-	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-	t.Setenv("DISPLAY", "")
-	c := newClipboard()
-	if c.tool == nil {
-		t.Fatalf("no tool: %s", c.missing)
+	c := testClipboard(
+		map[string]string{"WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": t.TempDir()},
+	)
+	t.Cleanup(c.closeMechanism)
+	if _, err := c.mechanism(weavewire.KindClipboardStat); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.m.(*tool); !ok {
+		t.Fatalf("mechanism %T, want the tools", c.m)
 	}
 	return c
 }
 
-func x11(t *testing.T) *clipboard {
-	t.Helper()
-	t.Setenv("WAYLAND_DISPLAY", "")
-	t.Setenv("DISPLAY", ":0")
+// testClipboard is the backend in a session with env, whose display servers
+// refuse it unless a test dials them itself.
+func testClipboard(env map[string]string) *clipboard {
 	c := newClipboard()
-	if c.tool == nil {
-		t.Fatalf("no tool: %s", c.missing)
-	}
+	c.getenv = func(k string) string { return env[k] }
+	c.dialWayland = func(string) (mechanism, error) { return nil, errNoDataControl }
+	c.dialX11 = func(string) (mechanism, error) { return nil, errNoXFixes }
 	return c
+}
+
+// closeMechanism closes the backend's connection, for a test's cleanup.
+func (c *clipboard) closeMechanism() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m != nil {
+		c.m.close()
+		c.m = nil
+	}
 }

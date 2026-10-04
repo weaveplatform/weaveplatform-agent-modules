@@ -4,99 +4,191 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
-	"fmt"
-	"hash/fnv"
 	"os"
 	"slices"
 	"strings"
-	"sync/atomic"
+	"sync"
 
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveclipboard"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
-// clipboard is the console user's clipboard, through whichever command-line
-// tool speaks to the session's display server. Linux has no clipboard API
-// below the display server, and linking a Wayland or X11 client library would
-// take the module off pure Go; the tools are what every desktop ships.
+// clipboard is the console user's clipboard, through the session's display
+// server. core starts the module inside the console session with that
+// session's WAYLAND_DISPLAY or DISPLAY, so the environment says which server
+// to talk to, and the module talks to it in pure Go:
 //
-// core starts the module inside the console session with that session's
-// WAYLAND_DISPLAY or DISPLAY, so the environment says which server to talk to.
+//   - Wayland, through a data-control protocol (wayland.go) where the
+//     compositor has one;
+//   - X11 — a plain X session, or XWayland under a compositor without data
+//     control (GNOME) — as the CLIPBOARD selection's owner (x11.go);
+//   - failing both, wl-clipboard's wl-paste and wl-copy (tool.go), which hold
+//     one representation per copy. Stat says so.
+//
+// The first two hold every representation of a set at once, as the macOS
+// pasteboard and the Windows clipboard do. The connection is made at the
+// first op and made again after it breaks (a compositor restart).
 type clipboard struct {
-	tool *tool
-	// missing says why there is no tool, for the unsupported answer.
-	missing string
-	stage   *stager
-	// sets counts this module's own writes. It is part of the token, so a set
-	// changes the token even when it writes what the clipboard already held.
-	sets atomic.Uint64
+	getenv      func(string) string
+	look        func(string) bool
+	dialWayland func(path string) (mechanism, error)
+	dialX11     func(display string) (mechanism, error)
+
+	mu    sync.Mutex
+	m     mechanism
+	stage *stager
 }
+
+// mechanism is one way of reaching the clipboard.
+type mechanism interface {
+	// name says what the clipboard is reached through, for a limitation.
+	name() string
+	// single reports a mechanism that holds one representation per set.
+	single() bool
+	// offered lists the targets (X11 atoms or MIME types) the clipboard
+	// offers now, and the change token.
+	offered(ctx context.Context) ([]string, uint64, error)
+	// read returns one target's data.
+	read(ctx context.Context, target string) ([]byte, error)
+	// own makes offers the clipboard and returns the token afterwards.
+	own(ctx context.Context, offers []offer) (uint64, error)
+	// broken reports a connection that has ended and must be made again.
+	broken() bool
+	close()
+}
+
+// offer is one target a set offers, with its data.
+type offer struct {
+	target string
+	data   []byte
+}
+
+// maxRead caps one representation read from the clipboard: what one set may
+// carry in total.
+const maxRead = weavewire.MaxClipboardBytes
 
 func newClipboard() *clipboard {
-	return detect(os.Getenv, lookPath)
+	return &clipboard{
+		getenv: os.Getenv,
+		look:   lookPath,
+		dialWayland: func(path string) (mechanism, error) {
+			d, err := dialDataControl(path)
+			if err != nil {
+				return nil, err
+			}
+			return d, nil
+		},
+		dialX11: func(display string) (mechanism, error) {
+			x, err := dialX11(display)
+			if err != nil {
+				return nil, err
+			}
+			return x, nil
+		},
+		stage: &stager{},
+	}
 }
 
-// detect picks the tool for the session's display server: wl-clipboard on
-// Wayland, xclip on X11. A Wayland session without wl-clipboard but with
-// XWayland and xclip still has a working clipboard through X11, which
-// Wayland applications share.
-func detect(getenv func(string) string, look func(string) bool) *clipboard {
-	c := &clipboard{stage: &stager{}}
-	wayland, x11 := getenv("WAYLAND_DISPLAY"), getenv("DISPLAY")
-	switch {
-	case wayland != "" && look("wl-paste") && look("wl-copy"):
-		c.tool = wlClipboard()
-	case x11 != "" && look("xclip"):
-		c.tool = xclip()
-	case wayland != "":
-		c.missing = fmt.Sprintf("the session's Wayland display %q needs wl-clipboard "+
-			"(wl-paste and wl-copy), which is not installed", wayland)
-	case x11 != "":
-		c.missing = fmt.Sprintf("the session's X11 display %q needs xclip, "+
-			"which is not installed", x11)
-	default:
-		c.missing = "the session has no Wayland or X11 display " +
+// mechanism returns the session's clipboard mechanism, connecting if there is
+// none or the last one broke. With none to be had the op is unsupported, and
+// says why, so a host can tell a session it cannot sync from a broken module.
+func (c *clipboard) mechanism(kind string) (mechanism, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m != nil && !c.m.broken() {
+		return c.m, nil
+	}
+	if c.m != nil {
+		c.m.close()
+		c.m = nil
+	}
+	m, reason := c.detect()
+	if m == nil {
+		return nil, &weavewire.UnsupportedError{Kind: kind, Reason: reason}
+	}
+	c.m = m
+	return m, nil
+}
+
+// detect connects to the session's display server, richest mechanism first.
+func (c *clipboard) detect() (mechanism, string) {
+	wayland, display := c.getenv("WAYLAND_DISPLAY"), c.getenv("DISPLAY")
+	if wayland == "" && display == "" {
+		return nil, "the session has no Wayland or X11 display " +
 			"(WAYLAND_DISPLAY and DISPLAY are both unset)"
 	}
-	return c
+	var reasons []string
+	if wayland != "" {
+		path, err := wlSocket(wayland, c.getenv("XDG_RUNTIME_DIR"))
+		if err == nil {
+			var m mechanism
+			if m, err = c.dialWayland(path); err == nil {
+				return m, ""
+			}
+		}
+		reasons = append(reasons, err.Error())
+	}
+	if display != "" {
+		m, err := c.dialX11(display)
+		if err == nil {
+			return m, ""
+		}
+		reasons = append(reasons, err.Error())
+	}
+	if wayland != "" {
+		if c.look("wl-paste") && c.look("wl-copy") {
+			return wlClipboard(), ""
+		}
+		reasons = append(reasons, "wl-clipboard (wl-paste and wl-copy) is not installed")
+	}
+	return nil, strings.Join(reasons, "; ")
+}
+
+// drop forgets a mechanism whose op failed because its connection ended, so
+// the next op connects again.
+func (c *clipboard) drop(m mechanism) {
+	if !m.broken() {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == m {
+		c.m.close()
+		c.m = nil
+	}
 }
 
 // Support reports every canonical format, each under the target it is
-// written as, and that the tools hold one of them per set.
+// offered as first, and, through wl-copy, that one is held per set.
 func (c *clipboard) Support() weaveclipboard.Support {
 	natives := make(map[weavewire.ClipboardFormat]string)
-	for f := range targetsFor {
-		if c.tool != nil {
-			natives[f] = c.tool.writeTarget(f)
-		} else {
-			natives[f] = targetsFor[f][0]
-		}
+	for f, targets := range writeTargets {
+		natives[f] = targets[0]
 	}
 	s := weaveclipboard.CanonicalSupport(natives)
-	s.SingleRepresentation = true
-	s.Limitation = "the clipboard is written through a command-line tool, which holds one " +
-		"representation per copy: a set keeps the richest"
+	c.mu.Lock()
+	m := c.m
+	c.mu.Unlock()
+	if m != nil && m.single() {
+		s.SingleRepresentation = true
+		s.Limitation = "the compositor offers neither ext-data-control-v1 nor " +
+			"wlr-data-control-unstable-v1 and the session has no X display, so the clipboard is " +
+			"written through " + m.name() + ", which holds one representation per copy: " +
+			"a set keeps the richest"
+	}
 	return s
 }
 
-func (c *clipboard) unsupported(kind string) error {
-	if c.tool != nil {
-		return nil
-	}
-	return &weavewire.UnsupportedError{Kind: kind, Reason: c.missing}
-}
-
-// representation is one format the clipboard offers: the target it is read
-// from and, once read, its bytes.
+// representation is one format the clipboard offers and the target it is
+// read from.
 type representation struct {
 	format weavewire.ClipboardFormat
 	target string
 }
 
-// offered maps the clipboard's targets to the formats they carry, in
+// formatsOffered maps the clipboard's targets to the formats they carry, in
 // weavewire's richest-first order.
-func offered(targets []string) []representation {
+func formatsOffered(targets []string) []representation {
 	var out []representation
 	for _, f := range weavewire.ClipboardFormats() {
 		if t, ok := pickTarget(targets, f); ok {
@@ -106,71 +198,28 @@ func offered(targets []string) []representation {
 	return out
 }
 
-// snapshot is one read of every mapped representation, and its token.
-type snapshot struct {
-	token uint64
-	reps  []content
-}
-
-type content struct {
-	format weavewire.ClipboardFormat
-	data   []byte
-}
-
-// snapshot reads the clipboard.
-//
-// Linux has no change counter — neither X11 selections nor the Wayland
-// data-device protocol number their changes — so the token is a digest of
-// the content itself: the target list and every mapped representation's
-// bytes. That reads the clipboard on every stat, which costs a process per
-// format and the bytes of an image when one is copied; a digest of the
-// targets alone would be cheap, but would miss a second image copied over the
-// first, which offers exactly the same targets. A sync loop that never sees a
-// change is worse than one that reads a few hundred kilobytes a second.
-func (c *clipboard) snapshot(ctx context.Context) (snapshot, error) {
-	targets, err := c.tool.targets(ctx)
-	if err != nil {
-		return snapshot{}, err
-	}
-	h := fnv.New64a()
-	_, _ = h.Write(binary.LittleEndian.AppendUint64(nil, c.sets.Load()))
-	for _, t := range targets {
-		_, _ = h.Write([]byte(t))
-		_, _ = h.Write([]byte{0})
-	}
-	var s snapshot
-	for _, r := range offered(targets) {
-		data, err := c.tool.paste(ctx, r.target)
-		if err != nil {
-			// The owner may have changed between the list and the read;
-			// leave the format out rather than fail.
-			continue
-		}
-		_, _ = h.Write([]byte(r.format))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write(data)
-		s.reps = append(s.reps, content{format: r.format, data: data})
-	}
-	s.token = h.Sum64()
-	return s, nil
-}
-
-// Stat reports the change token and the formats on offer, with their sizes:
-// the digest has read them anyway.
+// Stat reports the change token and the formats on offer. Sizes are left out
+// except for files, whose sizes the filesystem knows: asking the owner for its
+// data would make it render every representation on every poll.
 func (c *clipboard) Stat(ctx context.Context) (weavewire.ClipboardStatResponse, error) {
-	if err := c.unsupported(weavewire.KindClipboardStat); err != nil {
-		return weavewire.ClipboardStatResponse{}, err
-	}
-	s, err := c.snapshot(ctx)
+	m, err := c.mechanism(weavewire.KindClipboardStat)
 	if err != nil {
 		return weavewire.ClipboardStatResponse{}, err
 	}
-	resp := weavewire.ClipboardStatResponse{ChangeToken: s.token}
-	for _, r := range s.reps {
-		info := weavewire.ClipboardFormatInfo{Format: r.format, Size: int64(len(r.data))}
+	targets, tok, err := m.offered(ctx)
+	if err != nil {
+		c.drop(m)
+		return weavewire.ClipboardStatResponse{}, err
+	}
+	resp := weavewire.ClipboardStatResponse{ChangeToken: tok}
+	for _, r := range formatsOffered(targets) {
+		info := weavewire.ClipboardFormatInfo{Format: r.format}
 		if r.format == weavewire.ClipboardFiles {
-			info.Size = 0
-			for _, p := range parseURIList(r.data) {
+			list, err := m.read(ctx, r.target)
+			if err != nil {
+				continue
+			}
+			for _, p := range parseURIList(list) {
 				if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 					info.Size += fi.Size()
 					info.Count++
@@ -185,98 +234,163 @@ func (c *clipboard) Stat(ctx context.Context) (weavewire.ClipboardStatResponse, 
 	return resp, nil
 }
 
-// Read returns the representations asked for, and the token of exactly what
-// it read.
+// Read returns the representations asked for, and the token of the
+// clipboard they were read from.
 func (c *clipboard) Read(
 	ctx context.Context,
 	formats []weavewire.ClipboardFormat,
 	maxBytes int64,
 ) (weaveclipboard.Contents, error) {
-	if err := c.unsupported(weavewire.KindClipboardGet); err != nil {
-		return weaveclipboard.Contents{}, err
-	}
-	s, err := c.snapshot(ctx)
+	m, err := c.mechanism(weavewire.KindClipboardGet)
 	if err != nil {
 		return weaveclipboard.Contents{}, err
 	}
-	out := weaveclipboard.Contents{ChangeToken: s.token}
-	for _, r := range s.reps {
-		switch {
-		case len(formats) > 0 && !slices.Contains(formats, r.format):
-		case r.format == weavewire.ClipboardFiles:
-			out.Items = append(out.Items, readFiles(parseURIList(r.data), maxBytes)...)
-		default:
-			out.Items = append(out.Items, weavewire.ClipboardItem{
-				Format: r.format, Size: int64(len(r.data)), Data: r.data,
-			})
+	targets, tok, err := m.offered(ctx)
+	if err != nil {
+		c.drop(m)
+		return weaveclipboard.Contents{}, err
+	}
+	out := weaveclipboard.Contents{ChangeToken: tok}
+	for _, r := range formatsOffered(targets) {
+		if len(formats) > 0 && !slices.Contains(formats, r.format) {
+			continue
 		}
+		data, err := m.read(ctx, r.target)
+		if err != nil {
+			// The owner may have changed between the list and the read;
+			// leave the format out rather than fail.
+			continue
+		}
+		if r.format == weavewire.ClipboardFiles {
+			out.Items = append(out.Items, readFiles(parseURIList(data), maxBytes)...)
+			continue
+		}
+		out.Items = append(out.Items, weavewire.ClipboardItem{
+			Format: r.format, Size: int64(len(data)), Data: data,
+		})
 	}
 	return out, nil
 }
 
-// Write replaces the clipboard with the richest representation it was given.
-//
-// wl-copy and xclip each offer one target per copy — a second invocation
-// replaces the first rather than adding to it — so the others are dropped,
-// and Written says which one the clipboard now holds.
+// Write replaces the clipboard with every representation it was given — or,
+// through wl-copy, the richest — and reports which it holds. The service
+// hands it only canonical formats.
 func (c *clipboard) Write(
 	ctx context.Context,
 	items []weavewire.ClipboardItem,
 ) (weavewire.ClipboardSetResponse, error) {
-	if err := c.unsupported(weavewire.KindClipboardSet); err != nil {
-		return weavewire.ClipboardSetResponse{}, err
-	}
-	format, ok := richest(items)
-	if !ok {
-		// Nothing a Linux clipboard can hold: the OS accepted nothing, and
-		// the clipboard is as it was.
-		s, err := c.snapshot(ctx)
-		return weavewire.ClipboardSetResponse{ChangeToken: s.token}, err
-	}
-	var data []byte
-	if format == weavewire.ClipboardFiles {
-		paths, err := c.stage.files(items)
-		if err != nil {
-			return weavewire.ClipboardSetResponse{}, err
-		}
-		data = uriList(paths)
-	} else {
-		for _, it := range items {
-			if it.Format == format {
-				data = it.Data
-				break
-			}
-		}
-	}
-	if err := c.tool.copy(ctx, c.tool.writeTarget(format), data); err != nil {
-		return weavewire.ClipboardSetResponse{}, err
-	}
-	c.sets.Add(1)
-	s, err := c.snapshot(ctx)
+	m, err := c.mechanism(weavewire.KindClipboardSet)
 	if err != nil {
 		return weavewire.ClipboardSetResponse{}, err
 	}
-	return weavewire.ClipboardSetResponse{
-		ChangeToken: s.token,
-		Written:     []weavewire.ClipboardFormat{format},
-	}, nil
-}
-
-// richest picks the format to write: the first of weavewire's richest-first
-// list that the items carry and a Linux clipboard can hold.
-func richest(items []weavewire.ClipboardItem) (weavewire.ClipboardFormat, bool) {
+	var formats []weavewire.ClipboardFormat
 	for _, f := range weavewire.ClipboardFormats() {
-		if _, known := targetsFor[f]; !known {
+		if slices.ContainsFunc(
+			items,
+			func(it weavewire.ClipboardItem) bool { return it.Format == f },
+		) {
+			formats = append(formats, f)
+		}
+	}
+	if len(formats) == 0 {
+		// The service passes only formats the clipboard holds; a caller
+		// that skipped it gets the answer the service would have given.
+		return weavewire.ClipboardSetResponse{}, &weavewire.UnsupportedError{
+			Kind:   weavewire.KindClipboardSet,
+			Reason: "none of the formats is one a clipboard holds",
+		}
+	}
+	if m.single() {
+		formats = formats[:1] // richest first
+	}
+
+	var offers []offer
+	for _, f := range formats {
+		if f == weavewire.ClipboardFiles {
+			paths, err := c.stage.files(items)
+			if err != nil {
+				return weavewire.ClipboardSetResponse{}, err
+			}
+			offers = append(offers, fileOffers(paths)...)
 			continue
 		}
-		if slices.ContainsFunc(items, func(it weavewire.ClipboardItem) bool {
-			return it.Format == f
-		}) {
-			return f, true
+		i := slices.IndexFunc(
+			items,
+			func(it weavewire.ClipboardItem) bool { return it.Format == f },
+		)
+		for _, t := range writeTargets[f] {
+			offers = append(offers, offer{target: t, data: items[i].Data})
+		}
+	}
+	if m.single() {
+		offers = offers[:1] // wl-copy offers one target
+	}
+	tok, err := m.own(ctx, offers)
+	if err != nil {
+		c.drop(m)
+		return weavewire.ClipboardSetResponse{}, err
+	}
+	return weavewire.ClipboardSetResponse{ChangeToken: tok, Written: formats}, nil
+}
+
+// fileOffers are the targets a copy of files is offered as: the URI list
+// every file manager reads, and GNOME's own form of it, which Nautilus pastes
+// as a copy rather than a link.
+func fileOffers(paths []string) []offer {
+	gnome := "copy"
+	for _, p := range paths {
+		gnome += "\n" + fileURI(p)
+	}
+	return []offer{
+		{target: "text/uri-list", data: uriList(paths)},
+		{target: "x-special/gnome-copied-files", data: []byte(gnome)},
+	}
+}
+
+// writeTargets lists, for each format, the targets a set offers it as, the
+// first being the one stat names. Applications disagree on text: GTK reads
+// text/plain;charset=utf-8, X11 clients UTF8_STRING, and others plain
+// text/plain, so all three are offered; RTF appears under two MIME types.
+var writeTargets = map[weavewire.ClipboardFormat][]string{
+	weavewire.ClipboardText:  {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain"},
+	weavewire.ClipboardHTML:  {"text/html"},
+	weavewire.ClipboardRTF:   {"text/rtf", "application/rtf"},
+	weavewire.ClipboardPNG:   {"image/png"},
+	weavewire.ClipboardTIFF:  {"image/tiff"},
+	weavewire.ClipboardPDF:   {"application/pdf"},
+	weavewire.ClipboardFiles: {"text/uri-list", "x-special/gnome-copied-files"},
+}
+
+// targetsFor lists, for each format, the targets another application may
+// offer it under, preferred first. STRING is Latin-1, read only when nothing
+// better is offered.
+var targetsFor = map[weavewire.ClipboardFormat][]string{
+	weavewire.ClipboardText:  {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING"},
+	weavewire.ClipboardHTML:  {"text/html"},
+	weavewire.ClipboardRTF:   {"text/rtf", "application/rtf"},
+	weavewire.ClipboardPNG:   {"image/png"},
+	weavewire.ClipboardTIFF:  {"image/tiff"},
+	weavewire.ClipboardPDF:   {"application/pdf"},
+	weavewire.ClipboardFiles: {"text/uri-list", "x-special/gnome-copied-files"},
+}
+
+// pickTarget finds the target the clipboard offers format f under. Targets
+// are compared case-insensitively and exactly — text/plain;charset=utf-8 is
+// not text/plain, which may be in the locale's encoding.
+func pickTarget(offered []string, f weavewire.ClipboardFormat) (string, bool) {
+	for _, want := range targetsFor[f] {
+		for _, o := range offered {
+			if strings.EqualFold(normalise(o), normalise(want)) {
+				return o, true
+			}
 		}
 	}
 	return "", false
 }
+
+// normalise drops the whitespace some applications put around a MIME
+// parameter ("text/plain; charset=utf-8").
+func normalise(t string) string { return strings.ReplaceAll(t, " ", "") }
 
 // readFiles reads each copied file's content: the paths mean nothing on the
 // host, so the content is what crosses. A directory or unreadable path is

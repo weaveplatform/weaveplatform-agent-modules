@@ -114,6 +114,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # weave-linux-clipboard owns the clipboard of an X display started for
+      # its tests: its TestMain starts Xvfb when Xvfb is installed, and xclip
+      # is the other application it is checked against. Its Wayland tests run
+      # against a compositor of their own in the test process.
+      - name: Install Xvfb and xclip
+        if: matrix.dir == 'modules/weave-linux-clipboard'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xclip
+
       # Workspace mode, as a developer builds: sibling modules resolve to the
       # local tree. -coverpkg counts code a package's callers exercise.
       - name: Tests (race, shuffle, coverage)

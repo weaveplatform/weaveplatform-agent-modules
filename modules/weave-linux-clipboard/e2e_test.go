@@ -19,13 +19,14 @@ import (
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
-// The host's view: the module's real backend, driving the fake tools rather
-// than a display server, behind core's channel gate — reached by the host
-// client over real framing, and only after authentication.
+// The host's view: the module's real backend, speaking data control to a
+// compositor of the test's own rather than the session's, behind core's
+// channel gate — reached by the host client over real framing, and only
+// after authentication.
 func TestClipboardThroughTheChannel(t *testing.T) {
-	f := installFake(t)
+	f := newFakeCompositor(t, true, false)
 	// The backend is chosen from the session's environment, as core sets it.
-	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("WAYLAND_DISPLAY", f.path)
 	t.Setenv("DISPLAY", "")
 	svc := newService()
 
@@ -57,7 +58,8 @@ func TestClipboardThroughTheChannel(t *testing.T) {
 		t.Fatalf("authenticate: %v", err)
 	}
 
-	f.offer(t, nil, map[string]string{"text/plain;charset=utf-8": "from the guest"})
+	f.setForeign(map[string][]byte{"text/plain;charset=utf-8": []byte("from the guest")},
+		"text/plain;charset=utf-8")
 	st, err := client.ClipboardStat(ctx)
 	if err != nil || len(st.Formats) != 1 || st.Formats[0].Format != weavewire.ClipboardText {
 		t.Fatalf("stat = %+v, %v", st, err)
@@ -74,8 +76,8 @@ func TestClipboardThroughTheChannel(t *testing.T) {
 		{Format: weavewire.ClipboardText, Data: []byte("caption")},
 		{Format: weavewire.ClipboardPNG, Data: big},
 	})
-	if err != nil ||
-		!slices.Equal(set.Written, []weavewire.ClipboardFormat{weavewire.ClipboardPNG}) {
+	if err != nil || !slices.Equal(set.Written,
+		[]weavewire.ClipboardFormat{weavewire.ClipboardPNG, weavewire.ClipboardText}) {
 		t.Fatalf("set = %+v, %v", set, err)
 	}
 	after, err := client.ClipboardStat(ctx)

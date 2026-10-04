@@ -49,7 +49,7 @@ the op's kind plus `.result`. See
 | power | shutdown, restart | `weave-linux-power`: systemctl or shutdown | `weave-macos-power`: shutdown | `weave-windows-power`: InitiateShutdown |
 | time | get, set | `weave-linux-time`: clock_settime | `weave-macos-time`: settimeofday | `weave-windows-time`: SetSystemTime |
 | metrics | sample CPU, load, memory, swap, disk, process count | `weave-linux-metrics`: kernel load and memory counters, procfs, statfs | `weave-macos-metrics`: Mach host statistics, libproc, sysctl | `weave-windows-metrics`: system times, memory status, disk space |
-| clipboard | stat, get, set; content over 256 KiB streams in chunks | `weave-linux-clipboard`: wl-clipboard or xclip | `weave-macos-clipboard`: NSPasteboard | `weave-windows-clipboard`: the Win32 clipboard |
+| clipboard | stat, get, set of every [canonical format](docs/clipboard.md) at once; content over 256 KiB streams in chunks | `weave-linux-clipboard`: Wayland data control or the X11 selection, in Go (wl-clipboard as a fallback) | `weave-macos-clipboard`: NSPasteboard | `weave-windows-clipboard`: the Win32 clipboard |
 | session | current, list, lock; `weave.session.changed` events | `weave-linux-session`: logind, loginctl | `weave-macos-session`: SystemConfiguration, IOConsoleUsers (no lock) | `weave-windows-session`: WTS (no lock) |
 | display | list modes and scale, set resolution and scale | `weave-linux-display`: wlr-randr or xrandr | `weave-macos-display`: CoreGraphics | `weave-windows-display`: ChangeDisplaySettingsEx (scale read-only) |
 

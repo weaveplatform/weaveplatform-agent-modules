@@ -2,7 +2,10 @@ module github.com/weaveplatform/weaveplatform-agent-modules/modules/weave-linux-
 
 go 1.27
 
-require github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.1
+require (
+	github.com/jezek/xgb v1.3.1
+	github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.1
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect

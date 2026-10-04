@@ -5,52 +5,39 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
-
-	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
-// tool is one command-line clipboard client.
+// tool is the clipboard through wl-clipboard's wl-paste and wl-copy: the
+// fallback for a Wayland session whose compositor has no data-control
+// protocol and that has no X display to reach the clipboard through either.
+//
+// wl-copy offers one target per copy — a second invocation replaces the
+// first rather than adding to it — so this mechanism holds one representation
+// per set, and stat says so.
 type tool struct {
-	// list lists the clipboard's targets, one per line.
-	list []string
-	// pasteArgs and copyArgs build the read and write of one target.
-	pasteArgs func(target string) []string
-	copyArgs  func(target string) []string
-	// text is the target plain text is written as: the one the tool's
-	// server treats as UTF-8 text.
-	text string
-	cmd  string // the binary run for list and paste
-	cpy  string // the binary run for copy
+	cmd, cpy string // the binaries run for list and paste, and for copy
+	// sets counts this module's own writes. It is part of the token, so a set
+	// changes the token even when it writes what the clipboard already held.
+	sets atomic.Uint64
 }
 
-func wlClipboard() *tool {
-	return &tool{
-		cmd:       "wl-paste",
-		cpy:       "wl-copy",
-		list:      []string{"--list-types"},
-		pasteArgs: func(t string) []string { return []string{"--no-newline", "--type", t} },
-		copyArgs:  func(t string) []string { return []string{"--type", t} },
-		text:      "text/plain;charset=utf-8",
-	}
-}
+func wlClipboard() *tool { return &tool{cmd: "wl-paste", cpy: "wl-copy"} }
 
-func xclip() *tool {
-	return &tool{
-		cmd:  "xclip",
-		cpy:  "xclip",
-		list: []string{"-selection", "clipboard", "-t", "TARGETS", "-o"},
-		pasteArgs: func(t string) []string {
-			return []string{"-selection", "clipboard", "-t", t, "-o"}
-		},
-		copyArgs: func(t string) []string { return []string{"-selection", "clipboard", "-t", t, "-i"} },
-		text:     "UTF8_STRING",
-	}
-}
+func (t *tool) name() string { return "wl-copy" }
+
+func (t *tool) single() bool { return true }
+
+func (t *tool) broken() bool { return false }
+
+func (t *tool) close() {}
 
 func lookPath(name string) bool {
 	_, err := exec.LookPath(name)
@@ -61,12 +48,48 @@ func lookPath(name string) bool {
 // answers a request (a hung application) would otherwise hang the op.
 const commandTimeout = 5 * time.Second
 
+// offered lists what the clipboard offers, with a digest of its content as
+// the token.
+//
+// The tools see no change counter — the core Wayland protocol numbers no
+// selection change a client without focus can watch — so the token is a
+// digest of the content itself: the target list and every mapped
+// representation's bytes. That reads the clipboard on every stat, which costs
+// a process per format and the bytes of an image when one is copied; a
+// digest of the targets alone would be cheap, but would miss a second image
+// copied over the first, which offers exactly the same targets. A sync loop
+// that never sees a change is worse than one that reads a few hundred
+// kilobytes a second. The module's own sets are counted into it too, so every
+// set moves the token.
+func (t *tool) offered(ctx context.Context) ([]string, uint64, error) {
+	targets, err := t.targets(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	h := fnv.New64a()
+	_, _ = h.Write(binary.LittleEndian.AppendUint64(nil, t.sets.Load()))
+	for _, target := range targets {
+		_, _ = h.Write([]byte(target))
+		_, _ = h.Write([]byte{0})
+	}
+	for _, r := range formatsOffered(targets) {
+		data, err := t.read(ctx, r.target)
+		if err != nil {
+			continue // the owner changed between the list and the read
+		}
+		_, _ = h.Write([]byte(r.format))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(data)
+	}
+	return targets, h.Sum64(), nil
+}
+
 // targets lists what the clipboard offers. An empty clipboard is no targets,
-// not a failure: both tools exit non-zero when nothing owns the clipboard,
-// which is indistinguishable from their other refusals and far more common.
-// A tool that cannot be run at all is a failure.
+// not a failure: wl-paste exits non-zero when nothing owns the clipboard,
+// which is indistinguishable from its other refusals and far more common. A
+// tool that cannot be run at all is a failure.
 func (t *tool) targets(ctx context.Context) ([]string, error) {
-	out, err := t.output(ctx, t.list)
+	out, err := t.output(ctx, "--list-types")
 	if err != nil {
 		if _, exited := errors.AsType[*exec.ExitError](err); exited {
 			return nil, nil
@@ -76,11 +99,11 @@ func (t *tool) targets(ctx context.Context) ([]string, error) {
 	return splitLines(out), nil
 }
 
-func (t *tool) paste(ctx context.Context, target string) ([]byte, error) {
-	return t.output(ctx, t.pasteArgs(target))
+func (t *tool) read(ctx context.Context, target string) ([]byte, error) {
+	return t.output(ctx, "--no-newline", "--type", target)
 }
 
-func (t *tool) output(ctx context.Context, args []string) ([]byte, error) {
+func (t *tool) output(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	// The binaries are fixed; only a target name varies, passed as one
@@ -93,65 +116,25 @@ func (t *tool) output(ctx context.Context, args []string) ([]byte, error) {
 	return out, nil
 }
 
-// copy offers data as target.
+// own offers the first offer's data as its target.
 //
-// Both tools fork a process that stays behind to serve the clipboard until
-// something else takes it. That process inherits the command's output, so
-// they are left unattached: capturing them would make Run wait for a pipe the
-// server holds open for as long as the copy lasts.
-func (t *tool) copy(ctx context.Context, target string, data []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+// wl-copy forks a process that stays behind to serve the clipboard until
+// something else takes it. That process inherits the command's output, so it
+// is left unattached: capturing it would make Run wait for a pipe the server
+// holds open for as long as the copy lasts.
+func (t *tool) own(ctx context.Context, offers []offer) (uint64, error) {
+	o := offers[0]
+	cctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	args := t.copyArgs(target)
-	cmd := exec.CommandContext(ctx, t.cpy, args...) //nolint:gosec // G204: as in output
-	cmd.Stdin = bytes.NewReader(data)
+	cmd := exec.CommandContext(cctx, t.cpy, "--type", o.target) //nolint:gosec // G204: as in output
+	cmd.Stdin = bytes.NewReader(o.data)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s %s: %w", t.cpy, strings.Join(args, " "), err)
+		return 0, fmt.Errorf("%s --type %s: %w", t.cpy, o.target, err)
 	}
-	return nil
+	t.sets.Add(1)
+	_, tok, err := t.offered(ctx)
+	return tok, err
 }
-
-// writeTarget is the target a format is written as.
-func (t *tool) writeTarget(f weavewire.ClipboardFormat) string {
-	if f == weavewire.ClipboardText {
-		return t.text
-	}
-	return targetsFor[f][0]
-}
-
-// targetsFor lists, for each format a Linux clipboard can carry, the targets
-// it may be offered under, preferred first. Applications disagree: GTK offers
-// text/plain;charset=utf-8, X11 clients UTF8_STRING, and RTF appears under
-// two MIME types.
-var targetsFor = map[weavewire.ClipboardFormat][]string{
-	weavewire.ClipboardText: {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING"},
-	weavewire.ClipboardHTML: {"text/html"},
-	weavewire.ClipboardRTF:  {"text/rtf", "application/rtf"},
-	weavewire.ClipboardPNG:  {"image/png"},
-	weavewire.ClipboardTIFF: {"image/tiff"},
-	weavewire.ClipboardPDF:  {"application/pdf"},
-	// A list of file:// URIs: what file managers put on the clipboard for a
-	// copy, and accept on paste.
-	weavewire.ClipboardFiles: {"text/uri-list"},
-}
-
-// pickTarget finds the target the clipboard offers format f under. Targets
-// are compared case-insensitively and exactly — text/plain;charset=utf-8 is
-// not text/plain, which may be in the locale's encoding.
-func pickTarget(offered []string, f weavewire.ClipboardFormat) (string, bool) {
-	for _, want := range targetsFor[f] {
-		for _, o := range offered {
-			if strings.EqualFold(normalise(o), normalise(want)) {
-				return o, true
-			}
-		}
-	}
-	return "", false
-}
-
-// normalise drops the whitespace some applications put around a MIME
-// parameter ("text/plain; charset=utf-8").
-func normalise(t string) string { return strings.ReplaceAll(t, " ", "") }
 
 func splitLines(b []byte) []string {
 	var out []string
