@@ -204,7 +204,17 @@ Each module is built as the release pipeline builds it and packaged by
 
 - `/usr/lib/weave/modules/<id>/<id>`, 0755, root-owned: the path core's Linux layout runs;
 - `/usr/lib/weave/modules/<id>/module.manifest.json`, 0644, root-owned;
-- `Depends: weave-agent`.
+- `Depends: weave-agent`;
+- a `postinst` (on `configure`) and a `postrm` (on `remove` and `purge`) that run
+  `systemctl reload weave-agent` when systemd is running and the unit is active.
+
+So `dpkg -i`, an upgrade or `dpkg -r` of a module package takes effect at once on a
+running guest: weave-agent starts, replaces or stops that module without restarting
+itself or the other modules. The scripts never fail the package operation, and do
+nothing where systemd is not running, as in a chroot or an image build; there,
+weave-agent (v0.9.3 or later) also watches its modules directory, so a module installed
+before it starts, or behind its back, is still picked up. The scripts are in
+[`packaging/moduledeb/scripts`](packaging/moduledeb/scripts).
 
 `ARCH` defaults to this machine's architecture and `MODULES` to every Linux module.
 `moduledeb` refuses a manifest that does not declare `linux/<ARCH>`. It is stdlib Go, so
