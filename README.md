@@ -108,6 +108,7 @@ modules/weave-<os>-<capability>/
                            one Go module per capability per OS, built only for its OS
 packaging/moduledeb/       turns a built Linux module into a .deb for local bring-up
 packaging/modulepkg/       turns a built macOS module into a .pkg for local bring-up
+packaging/modulezip/       turns a built Windows module into a .zip with install.ps1 and uninstall.ps1
 tools/                     pinned developer tools (go-test-coverage, govulncheck); not in go.work
 docs/decisions/            ADR 0001 (capability modules per OS), ADR 0002 (the sdk and the Terraform model)
 ```
@@ -178,13 +179,15 @@ A module's tag runs [`module-release.yml`](.github/workflows/module-release.yml)
    its `version` the tag's version, or nothing is published.
 2. Every platform the manifest lists is built on Linux with
    `CGO_ENABLED=0 go build -trimpath`, as `<id>-<goos>-<goarch>[.exe]`.
-3. A module with darwin platforms is signed and notarised on macOS (below). Linux and
-   Windows binaries go straight to the next step.
+3. A module with darwin platforms is signed and notarised on macOS, and a module with
+   windows platforms is Authenticode-signed on Windows (both below). Linux binaries go
+   straight to the next step.
 4. A copy of the manifest is stamped with each artifact's `sha256` digest and size, taken
    after signing, so a channel pins the signed binary. The binaries and that sidecar are
-   pushed with ORAS to `ghcr.io/weaveplatform/weaveplatform-modules/<id>:<version>`.
-5. The same files, and a macOS module's signed `.pkg`, are attached to the module's GitHub
-   release.
+   pushed with ORAS to `ghcr.io/weaveplatform/weaveplatform-modules/<id>:<version>`. A
+   darwin or windows binary with no signed copy fails the release.
+5. The same files, and a macOS module's signed `.pkg` or a Windows module's `.zip`, are
+   attached to the module's GitHub release.
 6. A `module-published` dispatch asks weaveplatform-release-channels for a promotion PR, with a
    token minted from the org App (`RP_APP_ID`, `RP_APP_PRIVATE_KEY`) or, failing that,
    `RELEASE_PLEASE_PAT`. A failed dispatch fails the job; re-run it with
@@ -236,6 +239,80 @@ To prove the signing path on a branch before it merges, dispatch the workflow wi
 -f sign_check=weave-macos-clipboard`). It builds, signs, notarises and packages that
 module from the branch and uploads the binary (`darwin-signed`) and package
 (`darwin-pkg`) as workflow artifacts; nothing is pushed, released or dispatched.
+
+### Signed Windows modules
+
+A release `weave-agent` on Windows launches a module only if `WinVerifyTrust` accepts its
+Authenticode signature, chain included, and the leaf certificate's SHA-1 thumbprint is
+the manifest's `signing.authenticode_thumbprint`. Every `weave-windows-*` manifest pins
+the weaveplatform code-signing certificate:
+
+| | |
+|---|---|
+| Subject | `CN=weaveplatform code signing, O=weaveplatform` (self-signed, code signing EKU, valid to 2031-10-04) |
+| SHA-1 thumbprint | `A6A3936288B9409ED7A3458CF81014A77AB59B51` |
+| Manifest pin | `"signing": {"authenticode_subject": "weaveplatform code signing", "authenticode_thumbprint": "A6A3936288B9409ED7A3458CF81014A77AB59B51"}` |
+
+The certificate is self-signed, so nothing trusts it by default: core's Windows installer
+adds the public certificate to the guest's machine `Root` and `TrustedPublisher` stores,
+and only then does `WinVerifyTrust` accept a module. The subject is pinned as well as the
+thumbprint because core releases to date refuse a manifest without
+`authenticode_subject` before they read the thumbprint; when both are present the
+thumbprint is what is compared.
+
+The organisation holds the signing material:
+
+| Name | Kind | What |
+|---|---|---|
+| `WINDOWS_CODESIGN_PFX` | secret | the certificate and private key, as a base64 PFX |
+| `WINDOWS_CODESIGN_PFX_PASSWORD` | secret | the PFX's password |
+| `WINDOWS_CODESIGN_THUMBPRINT` | variable | the pinned thumbprint |
+| `WINDOWS_CODESIGN_CERT` | variable | the public certificate, PEM (or that PEM base64-encoded) |
+
+The release's **sign-windows** job runs on `windows-latest`, between **build** and
+**publish**, for a module with windows platforms. It is the only job given the PFX secrets,
+and its token is read-only. It uses `signtool` rather than `osslsigncode` on Linux, because
+the job must run `WinVerifyTrust`, which exists only on Windows, and signtool is
+Microsoft's own signer, already on the runner, and signs the PowerShell scripts as well.
+[`.github/scripts/authenticode.ps1`](.github/scripts/authenticode.ps1) holds the signing
+and checks. The job:
+
+- refuses a manifest whose `authenticode_thumbprint` is not `WINDOWS_CODESIGN_THUMBPRINT`,
+  a `WINDOWS_CODESIGN_CERT` or PFX holding another certificate, and missing secrets. A
+  real release then fails rather than publish binaries core would refuse;
+- signs each windows binary with `signtool sign /fd SHA256`, then adds an RFC 3161
+  timestamp with `signtool timestamp /tr http://timestamp.digicert.com /td SHA256`,
+  retried with backoff and alternating with Sectigo's server, so the signature outlives
+  the certificate;
+- checks with `Get-AuthenticodeSignature` that each binary is signed by the pinned
+  thumbprint and timestamped;
+- adds the public certificate to the runner's machine `Root` and `TrustedPublisher`
+  stores, as core's installer does on a guest, then requires `Get-AuthenticodeSignature`
+  to report `Valid` and `signtool verify /pa` (WinVerifyTrust, the Authenticode policy
+  core checks) to accept each binary with a SHA-256 file digest;
+- packages each binary with `modulezip`, with Authenticode-signed `install.ps1` and
+  `uninstall.ps1`, then installs and removes each zip into a scratch directory under
+  `-ExecutionPolicy AllSigned`;
+- deletes the PFX and removes the certificate from the stores, whatever happened.
+
+Check a released module on Windows, after trusting the certificate as a guest does:
+
+```
+Get-AuthenticodeSignature weave-windows-clipboard-windows-amd64.exe   # Valid, signer thumbprint A6A3…9B51
+signtool verify /pa /v weave-windows-clipboard-windows-amd64.exe      # Hash of file (sha256), timestamp
+```
+
+or on any machine with `osslsigncode`:
+
+```
+osslsigncode verify -CAfile weave-codesign.crt -in weave-windows-clipboard-windows-amd64.exe
+```
+
+To prove the Windows signing path on a branch, dispatch the workflow with `sign_check` set
+to a Windows module (`gh workflow run module-release.yml --ref <branch>
+-f sign_check=weave-windows-clipboard`). It builds, signs, verifies and packages that
+module and uploads the binaries (`windows-signed`) and zips (`windows-zip`) as workflow
+artifacts; nothing is pushed, released or dispatched.
 
 A module requires the sdk through `replace => ../../sdk`, so a module release always carries
 the sdk at the same commit. The `sdk/vX.Y.Z` tags are for module authors outside this
@@ -335,6 +412,68 @@ WEAVE_PKG_DRYRUN=1 sh packaging/modulepkg/scripts/postinstall pkg / /   # prints
 A package built on a Mac whose shell tags new files with `com.apple.provenance` lists
 `._*` entries in its payload. Those are the build machine's extended attributes, which
 installer restores as attributes rather than files, as with core's own package.
+
+### Windows
+
+The Windows counterpart builds a zip of each Windows module that installs itself, for a
+guest running core's `WeaveAgent` service (agent-core
+[`docs/windows-install.md`](https://github.com/weaveplatform/weaveplatform-agent-core/blob/main/docs/windows-install.md)).
+`modulezip` is stdlib Go, so this runs on any OS:
+
+```
+make zips MODULES="weave-windows-presence weave-windows-clipboard" ZIP_ARCH=arm64
+```
+
+Each module is built as the release pipeline builds it and packaged by
+[`packaging/modulezip`](packaging/modulezip) into
+`dist/<id>_<version>_windows_<arch>.zip`. `ZIP_ARCH` is `amd64` unless set, and `modulezip`
+refuses a manifest that does not declare `windows/<arch>`, and a binary that is not a
+Windows executable. A zip and a script rather than an MSI, because that is how core itself
+installs on Windows (its release zip and `install.ps1`). The media and unattend steps that
+install core then install a module the same way, unattended, and building one needs no
+WiX or Windows machine.
+
+| In the zip | Installed as |
+|---|---|
+| `install.ps1` | (run from the unpacked zip) |
+| `uninstall.ps1` | `%ProgramFiles%\Weave\uninstall.d\<id>.ps1` |
+| `module\<id>.exe` | `%ProgramFiles%\Weave\modules\<id>\<id>.exe`: the name core's discovery looks for |
+| `module\module.manifest.json` | `%ProgramFiles%\Weave\modules\<id>\module.manifest.json` |
+
+`%ProgramFiles%\Weave\modules` is the package-owned tree core's service runs modules from
+(`--modules-dir`, the counterpart of `/usr/lib/weave/modules`). Install from an elevated
+prompt, the specialize pass or a FirstLogonCommand:
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+- **Install.** Each file is copied beside its destination and renamed over it, the binary
+  first and the manifest last. Core reads a directory with no manifest as no module, so a
+  rescan mid-install never finds a manifest without its binary. Core runs every Windows
+  module from a copy in its exec directory, so an upgrade replaces the installed binary
+  while the module runs. `-InstallDir` installs into another core install directory.
+- **Reload.** Windows has no SIGHUP and core has no directory watch there yet, so the
+  script runs `%ProgramFiles%\Weave\weavectl.exe reload`, and weave-agent starts or
+  replaces the module at once. A failed reload, or no weavectl, only warns: core's periodic
+  rescan (a minute by default) finds the module anyway. `-NoReload` skips it, as for an
+  image build.
+- **Removal.** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+  "%ProgramFiles%\Weave\uninstall.d\<id>.ps1"` removes the manifest, the binary, the
+  module directory if nothing else is left in it (an operator's `config.json` stays) and
+  itself, then reloads weave-agent the same way so it stops the module. `uninstall.ps1` in
+  the unpacked zip does the same for its module.
+- **Signing.** `make zips` packages unsigned binaries and scripts, which a release
+  `weave-agent` refuses to run; they suit a guest running a `dev` build of core. The zips
+  attached to each module's GitHub release carry the Authenticode-signed binary and
+  Authenticode-signed scripts. Once core's installer has trusted the certificate, they also
+  run under `-ExecutionPolicy AllSigned`.
+- **Re-installing core.** Core's own `install.ps1` replaces `%ProgramFiles%\Weave\modules`
+  wholesale when its media carries a `modules\` tree. Install module zips after core, or
+  put the modules in core's media.
+
+The scripts are in [`packaging/modulezip/scripts`](packaging/modulezip/scripts), and its
+tests run them under Windows PowerShell and PowerShell 7 wherever those are installed.
 
 ## Contributing
 
