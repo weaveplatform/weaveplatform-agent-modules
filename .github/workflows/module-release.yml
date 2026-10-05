@@ -379,8 +379,7 @@ jobs:
             echo "== $(basename "$pkg")"
             pkgutil --check-signature "$pkg"
             .github/scripts/notarize.sh "$pkg"
-            xcrun stapler staple "$pkg"
-            xcrun stapler validate "$pkg"
+            .github/scripts/staple.sh "$pkg"
             spctl --assess -vv --type install "$pkg"
           done
 
