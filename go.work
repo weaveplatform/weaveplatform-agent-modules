@@ -30,5 +30,6 @@ use (
 	./modules/weave-windows-time
 	./packaging/moduledeb
 	./packaging/modulepkg
+	./packaging/modulezip
 	./sdk
 )

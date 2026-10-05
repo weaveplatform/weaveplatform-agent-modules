@@ -49,6 +49,7 @@ updates:
       - "/modules/weave-windows-time"
       - "/packaging/moduledeb"
       - "/packaging/modulepkg"
+      - "/packaging/modulezip"
       - "/tools"
     schedule:
       interval: "daily"
