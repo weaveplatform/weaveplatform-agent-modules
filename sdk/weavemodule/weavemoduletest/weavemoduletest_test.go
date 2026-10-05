@@ -370,6 +370,30 @@ func TestCoreModuleRegistry(t *testing.T) {
 			reason: hvchannel.ReasonBusy,
 			setup:  func() { core.SetBusy("weave.time", true) },
 		},
+		{
+			// Full for one frame, and only one: the next case is not busy.
+			module: "weave.time",
+			reason: hvchannel.ReasonBusy,
+			setup: func() {
+				core.SetBusy("weave.time", false)
+				core.SetBusyFor("weave.time", 1)
+			},
+		},
+		{
+			// A served module whose entry says it is not running is not
+			// delivered to.
+			module: "weave.time",
+			reason: hvchannel.ReasonNotRunning,
+			state:  "stopped",
+			setup: func() {
+				go core.SetModule(hvchannel.ModuleInfo{
+					ID:      weavemodule.ModuleID("test", weavewire.Time),
+					Address: "weave.time",
+					State:   "stopped",
+				})
+				h.recv() // its push
+			},
+		},
 	}
 	for _, c := range cases {
 		if c.setup != nil {

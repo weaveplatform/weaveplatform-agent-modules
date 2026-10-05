@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/protocol/hvchannel"
@@ -43,11 +45,33 @@ const ModuleStateRunning = "running"
 const ModuleStateWaitingForSession = "waiting-for-session"
 
 // ErrRegistryUnsupported reports a core that did not answer modules.list
-// within Options.RegistryTimeout. A weave-agent older than v0.9.2 ignores the
-// request rather than refusing it, so silence is all there is to go on; the
-// error also matches context.DeadlineExceeded. Feature-gate the way a host
-// did before the registry existed: call, and treat no answer as absent.
+// within Options.RegistryTimeout, on a connection with no sign that core has
+// a registry — or with positive evidence that it has none
+// (Options.CoreVersion before v0.9.2). A weave-agent older than v0.9.2
+// ignores the request rather than refusing it, so silence is all there is to
+// go on; the error also matches context.DeadlineExceeded. Feature-gate the
+// way a host did before the registry existed: call, and treat no answer as
+// absent.
+//
+// It is a conclusion about this one call, not about the connection: once core
+// shows it has a registry — a snapshot, a modules.changed push, a
+// delivery.failed, a refusal that echoes its frame's id — a later timeout is
+// ErrRegistryTimeout instead, and a late answer to the call that timed out
+// still lands in Snapshot.
 var ErrRegistryUnsupported = errors.New("weaveclient: core did not answer modules.list")
+
+// ErrRegistryTimeout reports a core that did not answer modules.list within
+// Options.RegistryTimeout although this connection has shown that it has a
+// registry (see ErrRegistryUnsupported for what counts), or although
+// Options.CoreVersion says it is v0.9.2 or later. Core answers modules.list
+// from memory without asking any module, so the channel itself is not
+// moving: core is stalled or wedged, or the transport is. Retrying the
+// registry is pointless until it moves again; do not downgrade to treating
+// the guest as an older core. The error also matches
+// context.DeadlineExceeded, and never ErrRegistryUnsupported.
+var ErrRegistryTimeout = errors.New(
+	"weaveclient: core has a module registry but did not answer modules.list",
+)
 
 // ErrUndeliverable matches (via errors.Is) every DeliveryError, whatever its
 // reason: core could not hand the frame to a module, so no module ever saw it.
@@ -119,8 +143,16 @@ func (e *DeliveryError) Is(target error) bool {
 // The channel must be authenticated: core refuses the request otherwise, and
 // Modules returns ErrNotAuthenticated. A core older than weave-agent v0.9.2
 // ignores it, so the wait is bounded by Options.RegistryTimeout and ends in
-// ErrRegistryUnsupported rather than hanging.
+// ErrRegistryUnsupported rather than hanging — or in ErrRegistryTimeout when
+// core is known to have a registry, and the silence means the channel is
+// stuck rather than the core old.
 func (c *Client) Modules(ctx context.Context) (ModulesSnapshot, error) {
+	return c.listModules(ctx, c.registryTimeout)
+}
+
+// listModules is Modules with its own bound; zero or negative waits as long
+// as ctx allows.
+func (c *Client) listModules(ctx context.Context, bound time.Duration) (ModulesSnapshot, error) {
 	id := c.newID()
 	reply := make(chan pendingReply, 1)
 	c.mu.Lock()
@@ -138,8 +170,8 @@ func (c *Client) Modules(ctx context.Context) (ModulesSnapshot, error) {
 	}()
 
 	var unanswered <-chan time.Time
-	if c.registryTimeout > 0 {
-		timer := time.NewTimer(c.registryTimeout)
+	if bound > 0 {
+		timer := time.NewTimer(bound)
 		defer timer.Stop()
 		unanswered = timer.C
 	}
@@ -153,15 +185,120 @@ func (c *Client) Modules(ctx context.Context) (ModulesSnapshot, error) {
 		}
 		return cloneSnapshot(*r.snap), nil
 	case <-unanswered:
-		return ModulesSnapshot{}, fmt.Errorf(
-			"%w in %s; weave-agent before v0.9.2 has no module registry: %w",
-			ErrRegistryUnsupported, c.registryTimeout, context.DeadlineExceeded,
-		)
+		return ModulesSnapshot{}, c.registryUnanswered(bound)
 	case <-ctx.Done():
 		return ModulesSnapshot{}, ctx.Err()
 	case <-c.done:
 		return ModulesSnapshot{}, c.Err()
 	}
+}
+
+// registryUnanswered is the error for a modules.list that went unanswered,
+// read from the evidence as it stands now rather than when the call began: a
+// push that arrived during the wait already proves core has a registry.
+func (c *Client) registryUnanswered(bound time.Duration) error {
+	c.mu.Lock()
+	evidence := c.coreRegistry
+	c.mu.Unlock()
+	switch evidence {
+	case registryPresent:
+		return fmt.Errorf(
+			"%w in %s; the channel is not moving: %w",
+			ErrRegistryTimeout, bound, context.DeadlineExceeded,
+		)
+	case registryAbsent:
+		return fmt.Errorf(
+			"%w in %s; core's version predates the registry (weave-agent v0.9.2): %w",
+			ErrRegistryUnsupported, bound, context.DeadlineExceeded,
+		)
+	}
+	return fmt.Errorf(
+		"%w in %s; weave-agent before v0.9.2 has no module registry: %w",
+		ErrRegistryUnsupported, bound, context.DeadlineExceeded,
+	)
+}
+
+// registryEvidence is what a connection has shown about core's registry.
+type registryEvidence int
+
+const (
+	// registryUnknown: nothing either way. A silent modules.list is read as
+	// an older core, as it always was.
+	registryUnknown registryEvidence = iota
+	// registryPresent: core has answered or pushed a snapshot, sent a
+	// delivery.failed or echoed an id on a refusal — all of which arrived
+	// with the registry in v0.9.2 — or Options.CoreVersion says v0.9.2+.
+	registryPresent
+	// registryAbsent: Options.CoreVersion says core predates v0.9.2. Only
+	// the caller can say that; silence on the wire never concludes it, so
+	// anything the wire later shows overrides it.
+	registryAbsent
+)
+
+// sawRegistry records that core has just done something only a core with
+// the registry does. It overrides any earlier conclusion, including one from
+// Options.CoreVersion: what core does on the wire is better evidence than
+// what a caller believed it was running.
+func (c *Client) sawRegistry() {
+	c.mu.Lock()
+	c.coreRegistry = registryPresent
+	c.mu.Unlock()
+}
+
+// reportsUndeliverable reports whether core is known to answer a frame it
+// cannot deliver with delivery.failed — which arrived with the registry, so
+// the same evidence says both. When an authentication's registry fetch is
+// still out, it waits for that first: an exec started straight after
+// authenticating would otherwise send its first input before the answer that
+// says how to send it.
+func (c *Client) reportsUndeliverable(ctx context.Context) (bool, error) {
+	c.mu.Lock()
+	evidence, refreshing := c.coreRegistry, c.refreshing
+	c.mu.Unlock()
+	if evidence == registryUnknown && refreshing != nil {
+		select {
+		case <-refreshing:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-c.done:
+			return false, c.Err()
+		}
+		c.mu.Lock()
+		evidence = c.coreRegistry
+		c.mu.Unlock()
+	}
+	return evidence == registryPresent, nil
+}
+
+// registryVersion is the first weave-agent with the registry and
+// delivery.failed.
+var registryVersion = [3]int{0, 9, 2}
+
+// evidenceFromVersion reads Options.CoreVersion: "v0.9.2" or "0.9.2". A
+// pre-release or build suffix ("-rc.1", "+abc") is ignored and only the
+// numbers compared: a version string is a hint, and the wire overrides it
+// either way.
+func evidenceFromVersion(v string) registryEvidence {
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return registryUnknown
+	}
+	var got [3]int
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return registryUnknown
+		}
+		got[i] = n
+	}
+	if slices.Compare(got[:], registryVersion[:]) >= 0 {
+		return registryPresent
+	}
+	return registryAbsent
 }
 
 // OnModulesChanged calls fn each time the client's snapshot of the registry
@@ -236,6 +373,7 @@ func (c *Client) routeModules(env hvchannel.Envelope) {
 		})
 		return
 	}
+	c.sawRegistry()
 	kept := c.applyModules(snap)
 	if env.Kind == hvchannel.KindModulesListResult {
 		c.answer(env.ID, pendingReply{snap: &kept})
@@ -264,18 +402,23 @@ func (c *Client) applyModules(snap ModulesSnapshot) ModulesSnapshot {
 }
 
 // resetModules forgets the snapshot, for a new authentication: the core on
-// the other end may be a new process whose revisions restart from 1.
+// the other end may be a new process whose revisions restart from 1 — or a
+// different weave-agent altogether, so what the wire showed about the old one
+// is dropped too, back to what Options.CoreVersion says.
 func (c *Client) resetModules() {
 	c.mu.Lock()
 	c.registry = nil
+	c.coreRegistry = c.baseRegistry
 	c.mu.Unlock()
 }
 
 // refreshModules fetches a snapshot after authenticating, for the cache and
-// the change handlers; a core that does not answer is left alone.
+// the change handlers; a core that does not answer is left alone. It closes
+// done when it ends, for exec input waiting to learn what core is.
 // ctx carries Authenticate's values but not its deadline, which has done its
 // job; Options.RegistryTimeout and the channel's end bound the wait.
-func (c *Client) refreshModules(ctx context.Context) {
+func (c *Client) refreshModules(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	if _, err := c.Modules(ctx); err != nil {
 		c.log.Debug("weaveclient: no module registry after authenticating", "err", err)
 	}
@@ -288,6 +431,7 @@ func (c *Client) routeDeliveryFailed(env hvchannel.Envelope) {
 	if err := json.Unmarshal(env.Data, &df); err != nil {
 		c.log.Warn("weaveclient: undecodable delivery.failed", "err", err)
 	}
+	c.sawRegistry()
 	derr := &DeliveryError{
 		Module: df.Module, Kind: df.Kind, Reason: df.Reason, State: df.State, Detail: df.Detail,
 	}

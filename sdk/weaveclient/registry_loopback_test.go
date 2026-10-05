@@ -636,8 +636,11 @@ func TestLegacyRefusalStillFailsCallsInFlight(t *testing.T) {
 }
 
 // An exec session whose input core cannot deliver ends with core's reason:
-// Wait returns it and the output readers end with it. A busy module only
-// cuts off the input; the process runs on and its exit still arrives.
+// Wait returns it and the output readers end with it. Busy for input sent
+// unconfirmed — before the client knew core reports refusals, so it cannot
+// tell which chunk was refused — only cuts off the input; the process runs on
+// and its exit still arrives. (Confirmed input rides out busy:
+// TestExecInputRidesOutABusyModule.)
 func TestExecSessionUndeliverableInput(t *testing.T) {
 	for _, c := range []struct {
 		reason string
