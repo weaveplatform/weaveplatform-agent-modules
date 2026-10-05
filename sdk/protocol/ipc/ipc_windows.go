@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sys/windows"
 )
 
 const network = NetworkPipe
@@ -19,13 +20,46 @@ const network = NetworkPipe
 //	(A;;GA;;;BA)  allow generic-all to Builtin Administrators
 //
 // This replaces go-winio's default (which grants broad access), closing
-// the "any local user can open the control/host pipe" hole. Modules that
-// run at lower privilege need a wider SDDL; that is set per-listener via
-// ListenPipeSDDL when per-module Windows privilege lands.
+// the "any local user can open the control/host pipe" hole. Listen adds the
+// listening process's own user to it (see ownPipeSDDL).
 const pipeSDDL = "D:(A;;GA;;;SY)(A;;GA;;;BA)"
 
+// Seam over the process token's user, for the SYSTEM and failure branches.
+var tokenUser = func() (*windows.SID, error) {
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, fmt.Errorf("ipc: reading the process token's user: %w", err)
+	}
+	return u.User.Sid, nil
+}
+
 func listen(addr string) (net.Listener, error) {
-	return ListenPipeSDDL(addr, pipeSDDL)
+	sddl, err := ownPipeSDDL()
+	if err != nil {
+		return nil, err
+	}
+	return ListenPipeSDDL(addr, sddl)
+}
+
+// ownPipeSDDL is pipeSDDL plus generic-all for the user this process runs
+// as. A listener must be able to open its own pipe: go-winio creates the
+// first instance with the descriptor, then every Accept opens a further
+// instance of that pipe for read and write, which is checked against the
+// descriptor like any other open. A module core launched as the console
+// user (privilege "user") is neither SYSTEM nor, under UAC, an
+// Administrator, so with pipeSDDL alone its first Accept fails with "Access
+// is denied", the gRPC server stops, the pipe goes, and core's dial finds
+// nothing there. The user gains nothing by it: the module process is
+// already theirs. Everyone else stays out.
+func ownPipeSDDL() (string, error) {
+	sid, err := tokenUser()
+	if err != nil {
+		return "", err
+	}
+	if sid.IsWellKnown(windows.WinLocalSystemSid) {
+		return pipeSDDL, nil
+	}
+	return pipeSDDL + "(A;;GA;;;" + sid.String() + ")", nil
 }
 
 // ListenPipeSDDL creates a named-pipe listener with an explicit SDDL, for
