@@ -51,7 +51,9 @@ multi-module specifics of this repository noted.
   and each `modules/weave-<os>-<capability>`), tagged `<path>/vX.Y.Z`; it bumps a
   module's `module.manifest.json` `version` with its release. A module tag runs
   `module-release.yml`, which refuses a tag whose directory, manifest id and
-  manifest version disagree. Nothing here publishes a version below 0.2.0: the Go
+  manifest version disagree, and signs and notarises a darwin module on macOS
+  with the team its manifest pins (`signing.apple_team_id`) before stamping its
+  digest: a release weave-agent refuses an unsigned macOS module. Nothing here publishes a version below 0.2.0: the Go
   checksum database and GHCR already hold 0.1.x.
 - **Commits and PR titles** follow Conventional Commits; release-please derives
   versions and the changelog from them.
