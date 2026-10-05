@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.3](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.2...sdk/v0.2.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* **sdk:** retry busy exec input and tell a stalled channel from an old core ([6102d53](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/6102d537ce54e99e10c95f04e5c054aacdff69ab))
+* **sdk:** retry exec input past a busy module instead of cutting it off ([6e35ffa](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/6e35ffa476ef494cdcadc8b4b05285284bf5ae77))
+* **sdk:** tell a stalled channel from a core without a registry ([a9bfd85](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/a9bfd85fe5bd4c540d841919f3367cdb407675e7))
+
 ## [0.2.2](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.1...sdk/v0.2.2) (2026-10-04)
 
 
