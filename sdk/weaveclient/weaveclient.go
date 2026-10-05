@@ -54,7 +54,9 @@
 // a fresh authentication may be to a core that restarted, and keeps whichever
 // snapshot has the higher revision, because a push and an answer can arrive in
 // either order. An older core ignores the request, so Modules is bounded by
-// Options.RegistryTimeout and ends in ErrRegistryUnsupported; such a core also
+// Options.RegistryTimeout and ends in ErrRegistryUnsupported — unless core has
+// already shown it has a registry, when the same silence is ErrRegistryTimeout:
+// a channel that is not moving, not a core that is too old. An older core also
 // sends no delivery failures, and calls behave as they did before: a call to a
 // missing module waits for its context or the session timeout.
 package weaveclient
@@ -128,6 +130,13 @@ type Client struct {
 	// moduleHandlers run, on the read loop, each time it advances.
 	registry       *ModulesSnapshot
 	moduleHandlers []func(ModulesSnapshot)
+	// coreRegistry is what this connection has shown about whether core has
+	// a registry at all, which is what a modules.list timeout means (see
+	// ErrRegistryTimeout). baseRegistry is the part of it that came from
+	// Options.CoreVersion rather than from the wire, which a fresh
+	// authentication falls back to.
+	coreRegistry registryEvidence
+	baseRegistry registryEvidence
 
 	done chan struct{}
 }
@@ -147,6 +156,15 @@ type Options struct {
 	// Zero means DefaultRegistryTimeout; negative waits as long as the
 	// call's own context allows.
 	RegistryTimeout time.Duration
+	// CoreVersion is the weave-agent version the caller already knows the
+	// guest runs — from the image it booted, say — such as "v0.9.2". It is
+	// evidence the wire cannot give before core answers anything: at v0.9.2
+	// or later a Modules timeout is ErrRegistryTimeout from the first call,
+	// and before it ErrRegistryUnsupported. Empty, or not a version, means
+	// unknown, and the client goes by what core does on the channel. The
+	// hello reply is no help here: its Version is the wire protocol's, not
+	// core's.
+	CoreVersion string
 }
 
 // DefaultRegistryTimeout is how long Modules waits for core's answer by
@@ -208,6 +226,8 @@ func New(ctx context.Context, rwc io.ReadWriteCloser, opts Options) *Client {
 	if c.registryTimeout == 0 {
 		c.registryTimeout = DefaultRegistryTimeout
 	}
+	c.baseRegistry = evidenceFromVersion(opts.CoreVersion)
+	c.coreRegistry = c.baseRegistry
 	go c.readLoop()
 	// The read loop blocks in Read, where a context cannot reach it. Closing
 	// the connection is the only portable way to unblock a pipe or socket.

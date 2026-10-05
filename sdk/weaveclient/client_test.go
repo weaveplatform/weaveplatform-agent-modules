@@ -34,9 +34,16 @@ type rawGuest struct {
 
 func newRaw(t *testing.T) (*rawGuest, *weaveclient.Client) {
 	t.Helper()
+	return newRawWith(t, weaveclient.Options{})
+}
+
+// newRawWith is newRaw with options; its Log is always the quiet one.
+func newRawWith(t *testing.T, opts weaveclient.Options) (*rawGuest, *weaveclient.Client) {
+	t.Helper()
 	guestConn, hostConn := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
-	client := weaveclient.New(ctx, hostConn, weaveclient.Options{Log: quietLog()})
+	opts.Log = quietLog()
+	client := weaveclient.New(ctx, hostConn, opts)
 	t.Cleanup(func() {
 		_ = client.Close()
 		cancel()

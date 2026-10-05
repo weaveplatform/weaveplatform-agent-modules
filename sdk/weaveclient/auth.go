@@ -239,6 +239,8 @@ func (c *Client) routeControl(env hvchannel.Envelope) {
 
 // routeRefusal fails the one call whose frame core refused.
 func (c *Client) routeRefusal(env hvchannel.Envelope) {
+	// Only a core with the registry echoes ids (v0.9.2).
+	c.sawRegistry()
 	var result hvchannel.AuthResult
 	_ = json.Unmarshal(env.Data, &result)
 	if result.OK {
