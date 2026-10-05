@@ -15,5 +15,8 @@
   "capabilities": [
     "hypervisor.channel"
   ],
-  "address": "weave.power"
+  "address": "weave.power",
+  "signing": {
+    "apple_team_id": "5GM6DW5337"
+  }
 }

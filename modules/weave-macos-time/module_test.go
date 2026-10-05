@@ -88,3 +88,13 @@ func TestModuleIsHealthyWithoutAReport(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Core's release verifier refuses to launch a macOS module whose manifest pins
+// no Apple team, and runs only a binary signed by the team it pins: the
+// weaveplatform Developer ID team module-release.yml signs with.
+func TestManifestPinsTheReleaseTeam(t *testing.T) {
+	m := loadManifest(t)
+	if m.Signing == nil || m.Signing.AppleTeamID != "5GM6DW5337" {
+		t.Errorf("signing %+v, want apple_team_id 5GM6DW5337", m.Signing)
+	}
+}

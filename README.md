@@ -176,16 +176,66 @@ A module's tag runs [`module-release.yml`](.github/workflows/module-release.yml)
 
 1. The tag names the module directory. The manifest's `id` must equal the directory name and
    its `version` the tag's version, or nothing is published.
-2. Every platform the manifest lists is built with `CGO_ENABLED=0 go build -trimpath`, as
-   `<id>-<goos>-<goarch>[.exe]`.
-3. A copy of the manifest is stamped with each artifact's `sha256` digest and size. The
-   binaries and that sidecar are pushed with ORAS to
-   `ghcr.io/weaveplatform/weaveplatform-modules/<id>:<version>`.
-4. The same files are attached to the module's GitHub release.
-5. A `module-published` dispatch asks weaveplatform-release-channels for a promotion PR, with a
+2. Every platform the manifest lists is built on Linux with
+   `CGO_ENABLED=0 go build -trimpath`, as `<id>-<goos>-<goarch>[.exe]`.
+3. A module with darwin platforms is signed and notarised on macOS (below). Linux and
+   Windows binaries go straight to the next step.
+4. A copy of the manifest is stamped with each artifact's `sha256` digest and size, taken
+   after signing, so a channel pins the signed binary. The binaries and that sidecar are
+   pushed with ORAS to `ghcr.io/weaveplatform/weaveplatform-modules/<id>:<version>`.
+5. The same files, and a macOS module's signed `.pkg`, are attached to the module's GitHub
+   release.
+6. A `module-published` dispatch asks weaveplatform-release-channels for a promotion PR, with a
    token minted from the org App (`RP_APP_ID`, `RP_APP_PRIVATE_KEY`) or, failing that,
    `RELEASE_PLEASE_PAT`. A failed dispatch fails the job; re-run it with
    `workflow_dispatch` and the tag.
+
+### Signed and notarised macOS modules
+
+A release `weave-agent` on macOS launches a module only if
+`codesign --verify --strict=all` accepts it against
+`anchor apple generic and certificate leaf[subject.OU] = "<team>"`, where `<team>` is the
+manifest's `signing.apple_team_id`, and its `TeamIdentifier` is that team: an unsigned,
+ad-hoc or self-signed binary is refused. Every `weave-macos-*` manifest pins the
+weaveplatform team, `5GM6DW5337`.
+
+The release runs as three jobs: **build** (Linux) → **sign-darwin** (macOS) → **publish**
+(Linux). Only `sign-darwin` holds the Apple certificates and notary key, and its token is
+read-only; only `publish` can write packages and releases, and it never sees a signing
+secret. `sign-darwin`:
+
+- imports the Developer ID Application and Installer identities into a throwaway keychain,
+  and refuses a manifest whose `apple_team_id` is not the org's `APPLE_TEAM_ID`;
+- signs each darwin binary with
+  `codesign --force --sign "Developer ID Application: … (5GM6DW5337)" --options runtime --timestamp`
+  and the identifier `run.weaveplatform.module.<id>`;
+- notarises it (a `ditto -c -k` zip through `notarytool submit --wait`), printing the
+  notary log and failing on anything but `Accepted`. A bare Mach-O cannot hold a stapled
+  ticket, so Gatekeeper checks its notarisation online;
+- verifies it with core's exact requirement, and checks `TeamIdentifier`, the secure
+  timestamp and the hardened runtime in `codesign -dv`;
+- packages it with `modulepkg`, signed with the Developer ID Installer identity, notarises
+  and staples the `.pkg`, and checks it with `stapler validate` and
+  `spctl -a -vv -t install`;
+- deletes the keychain and the `.p8`, whatever happened.
+
+Each notarisation's submission id and status are in the run's summary. Check a released
+module without installing it:
+
+```
+codesign -dv weave-macos-clipboard-darwin-arm64            # TeamIdentifier=5GM6DW5337, flags=0x10000(runtime)
+codesign --verify --strict=all \
+  -R='anchor apple generic and certificate leaf[subject.OU] = "5GM6DW5337"' \
+  weave-macos-clipboard-darwin-arm64                         # core's own check
+spctl -a -vv -t install weave-macos-clipboard_*_darwin_arm64.pkg   # accepted, Notarized Developer ID
+xcrun stapler validate weave-macos-clipboard_*_darwin_arm64.pkg
+```
+
+To prove the signing path on a branch before it merges, dispatch the workflow with
+`sign_check` set to a macOS module (`gh workflow run module-release.yml --ref <branch>
+-f sign_check=weave-macos-clipboard`). It builds, signs, notarises and packages that
+module from the branch and uploads the binary (`darwin-signed`) and package
+(`darwin-pkg`) as workflow artifacts; nothing is pushed, released or dispatched.
 
 A module requires the sdk through `replace => ../../sdk`, so a module release always carries
 the sdk at the same commit. The `sdk/vX.Y.Z` tags are for module authors outside this
@@ -249,9 +299,18 @@ flat component package with the identifier `run.weaveplatform.module.<id>`:
 Every directory in the payload is root:wheel 0755, the mode macOS and core's package already
 give the ones that exist, because installer applies a payload directory's mode to an
 existing one. Install one in the guest with
-`sudo installer -pkg <id>_<version>_darwin_arm64.pkg -target /`. The package is not signed;
+`sudo installer -pkg <id>_<version>_darwin_arm64.pkg -target /`.
 `PKG_ARCH` is `arm64` unless set, and `modulepkg` refuses a manifest that does not declare
 `darwin/<arch>`.
+
+- **Signing.** `make pkgs` builds unsigned binaries in unsigned packages, which a release
+  `weave-agent` refuses to run; they suit a guest running a `dev` build of core. To sign
+  the package, pass a Developer ID Installer identity in your keychain with `-sign` or
+  `WEAVE_PKG_SIGN_IDENTITY` (`WEAVE_PKG_SIGN_IDENTITY="Developer ID Installer: …" make pkgs`),
+  and sign the binary first with `codesign --options runtime --timestamp`. The packages
+  attached to each module's GitHub release are built by the release from the signed,
+  notarised binary, signed with the weaveplatform Installer identity, notarised and
+  stapled: install those on a guest running a released `weave-agent`.
 
 - **postinstall** runs `launchctl kill HUP system/run.weaveplatform.agent` when that daemon
   is loaded, so weave-agent starts or replaces the module at once. It does nothing when the

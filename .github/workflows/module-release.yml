@@ -5,12 +5,26 @@ name: module-release
 #   1. resolve the module directory from the tag and refuse a tag whose
 #      directory, manifest id and manifest version disagree;
 #   2. build every platform module.manifest.json declares (the manifest is the
-#      only list, so the build cannot drift from it);
-#   3. stamp a sidecar copy of the manifest with each artifact's digest and
-#      size, and push the binaries and the sidecar to GHCR with ORAS as
+#      only list, so the build cannot drift from it), on Linux;
+#   3. for a module with darwin platforms, sign each darwin binary with the
+#      organisation's Developer ID Application identity (hardened runtime,
+#      secure timestamp), notarise it, and verify it with the requirement core
+#      enforces; package it as a .pkg signed with the Developer ID Installer
+#      identity, notarised and stapled. This runs on macOS, since codesign,
+#      notarytool, pkgbuild and stapler exist nowhere else;
+#   4. stamp a sidecar copy of the manifest with each artifact's digest and
+#      size, taken from the signed binaries, and push the binaries and the
+#      sidecar to GHCR with ORAS as
 #      ghcr.io/<owner>/weaveplatform-modules/<id>:<version>;
-#   4. attach the same files to the module's GitHub release;
-#   5. ask weaveplatform-release-channels for a promotion PR (module-published).
+#   5. attach the same files, and any .pkg, to the module's GitHub release;
+#   6. ask weaveplatform-release-channels for a promotion PR (module-published).
+#
+# The jobs are split by what each must hold. Only the macOS signing job sees
+# the Apple certificates and notary key, and it can write nothing: its token is
+# read-only and it hands back artifacts. Only the publish job can write
+# packages and releases, and it never sees a signing secret. Running the whole
+# release on macOS would put both in one job and move the Linux and Windows
+# builds onto a runner they do not need.
 #
 # release-please tags each module with its component, which is its path:
 # modules/weave-<os>-<capability>/vX.Y.Z. That is also the module's Go tag, so
@@ -20,23 +34,32 @@ name: module-release
 # promote.yml pulls <id>:<version>, reads module.manifest.json from it, and
 # records each artifact as <ref>#<os>-<arch> with the stamped digest and size.
 # Binaries are named <id>-<goos>-<goarch>[.exe]; the sidecar is the module's own
-# manifest with .version and .artifacts[{os, arch, digest, size}] set.
+# manifest with .version and .artifacts[{os, arch, digest, size}] set. The .pkg
+# goes to the GitHub release only: the channel pins binaries, not installers.
 on:
   push:
     tags:
       - 'modules/weave-*/v*'
-  # Re-publish an existing tag after a pipeline fix without cutting a release.
   workflow_dispatch:
     inputs:
+      # Re-publish an existing tag after a pipeline fix without cutting a release.
       tag:
         description: Existing tag to publish, e.g. modules/weave-linux-presence/v0.2.0
-        required: true
+        required: false
+        default: ''
+      # Prove the darwin signing path on any ref: build, sign, notarise and
+      # package one module from the dispatched ref, and upload the results as
+      # workflow artifacts. Nothing is pushed, released or dispatched.
+      sign_check:
+        description: A macOS module to sign and notarise from this ref without publishing, e.g. weave-macos-clipboard
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: module-release-${{ inputs.tag || github.ref_name }}
+  group: module-release-${{ inputs.tag || inputs.sign_check || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -48,16 +71,22 @@ jobs:
       id: ${{ steps.resolve.outputs.id }}
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      darwin: ${{ steps.resolve.outputs.darwin }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
+      # A tag is checked out by name; a sign check builds the dispatched
+      # commit. Later jobs check out the commit resolved here, so every job
+      # builds, signs and stamps the same tree.
       - name: Check Out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ inputs.tag || github.sha }}
           persist-credentials: false
 
       # The artifact is named by the manifest id and versioned by the tag, so a
@@ -67,44 +96,64 @@ jobs:
       - name: Module directory from the tag
         id: resolve
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag || (github.event_name == 'push' && github.ref_name) || '' }}
+          CHECK: ${{ inputs.sign_check }}
         run: |
           set -euo pipefail
-          dir="${TAG%/v*}"
-          version="${TAG##*/v}"
-          case "$dir" in
-            modules/weave-*) ;;
-            *) echo "::error::$TAG is not a capability module tag"; exit 1 ;;
-          esac
+          if [ -n "$TAG" ] && [ -n "$CHECK" ]; then
+            echo "::error::set tag or sign_check, not both"; exit 1
+          fi
+          if [ -n "$CHECK" ]; then
+            # A sign check: the module at the dispatched commit, at whatever
+            # version its manifest declares, published nowhere.
+            case "$CHECK" in
+              weave-macos-*) ;;
+              *) echo "::error::sign_check takes a macOS module, not $CHECK"; exit 1 ;;
+            esac
+            dir="modules/$CHECK"
+            version=$(jq -r .version "$dir/module.manifest.json" 2>/dev/null) \
+              || { echo "::error::no module $CHECK under modules/"; exit 1; }
+            publish=false
+          else
+            [ -n "$TAG" ] || { echo "::error::set tag or sign_check"; exit 1; }
+            dir="${TAG%/v*}"
+            version="${TAG##*/v}"
+            case "$dir" in
+              modules/weave-*) ;;
+              *) echo "::error::$TAG is not a capability module tag"; exit 1 ;;
+            esac
+            publish=true
+          fi
           printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' \
-            || { echo "::error::$TAG does not carry a semantic version"; exit 1; }
+            || { echo "::error::${TAG:-$CHECK} does not carry a semantic version"; exit 1; }
           manifest="$dir/module.manifest.json"
           [ -f "$manifest" ] || { echo "::error::$dir has no module.manifest.json"; exit 1; }
           id=$(jq -r .id "$manifest")
           [ "$id" = "${dir#modules/}" ] || { echo "::error::$manifest id is $id, not ${dir#modules/}"; exit 1; }
           declared=$(jq -r .version "$manifest")
           [ "$declared" = "$version" ] || { echo "::error::$manifest version is $declared, the tag is $version"; exit 1; }
+          darwin=$(jq -r 'any(.platforms[]; .os == "darwin")' "$manifest")
           {
             echo "dir=$dir"
             echo "id=$id"
             echo "version=$version"
             echo "tag=$TAG"
+            echo "ref=$(git rev-parse HEAD)"
+            echo "publish=$publish"
+            echo "darwin=$darwin"
           } >> "$GITHUB_OUTPUT"
-          echo "publishing $id $version from $dir"
+          if [ "$publish" = true ]; then
+            echo "publishing $id $version from $dir"
+          else
+            echo "sign check of $id $version from $dir at $(git rev-parse HEAD); nothing is published"
+          fi
 
-  publish:
-    name: 'Publish ${{ needs.module.outputs.id }} ${{ needs.module.outputs.version }}'
+  build:
+    name: 'Build ${{ needs.module.outputs.id }} ${{ needs.module.outputs.version }}'
     needs: [module]
     runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: write
-      packages: write
     env:
-      DIR: ${{ needs.module.outputs.dir }}
       ID: ${{ needs.module.outputs.id }}
-      VERSION: ${{ needs.module.outputs.version }}
-      TAG: ${{ needs.module.outputs.tag }}
-      CHANNELS_REPO: weaveplatform-release-channels
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -114,7 +163,7 @@ jobs:
       - name: Check Out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.module.outputs.tag }}
+          ref: ${{ needs.module.outputs.ref }}
           persist-credentials: false
 
       - name: Set up Go
@@ -142,6 +191,290 @@ jobs:
             GOOS="$os" GOARCH="$arch" go build -trimpath -o "$RUNNER_TEMP/dist/${ID}-${os}-${arch}${ext}" .
           done
           ls -la "$RUNNER_TEMP/dist"
+
+      - name: Upload the binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binaries
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-darwin:
+    name: 'Sign and notarise ${{ needs.module.outputs.id }} for macOS'
+    needs: [module, build]
+    if: needs.module.outputs.darwin == 'true'
+    runs-on: macos-latest
+    # Read-only: this job holds the signing identities, so it writes nothing
+    # but its own workflow artifacts.
+    permissions:
+      contents: read
+    env:
+      ID: ${{ needs.module.outputs.id }}
+      DIR: ${{ needs.module.outputs.dir }}
+      APPLE_TEAM: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.module.outputs.ref }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packaging/modulepkg/go.mod
+          cache: false
+
+      - name: Download the binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: binaries
+          path: ${{ runner.temp }}/dist
+
+      # The keychain and the notary key live under the runner's temp
+      # directory, which a job-level env cannot name.
+      - name: Signing paths
+        run: |
+          echo "KEYCHAIN=$RUNNER_TEMP/weave-signing.keychain-db" >> "$GITHUB_ENV"
+          echo "NOTARY_KEY=$RUNNER_TEMP/notary/AuthKey.p8" >> "$GITHUB_ENV"
+
+      # Core refuses a darwin module whose manifest pins no team, and one
+      # signed by a team other than the one pinned. Signing with a team the
+      # manifest does not name would publish a module no device runs.
+      - name: The manifest pins the signing team
+        run: |
+          set -euo pipefail
+          [ -n "$APPLE_TEAM" ] || { echo "::error::the APPLE_TEAM_ID variable is not set"; exit 1; }
+          pinned=$(jq -r '.signing.apple_team_id // empty' "$DIR/module.manifest.json")
+          [ "$pinned" = "$APPLE_TEAM" ] || {
+            echo "::error::$DIR/module.manifest.json pins apple_team_id '${pinned}', signing is with $APPLE_TEAM"
+            exit 1
+          }
+
+      # A throwaway keychain holds both identities for this job alone; the
+      # cleanup step deletes it, and the .p8, whatever happens. The partition
+      # list lets codesign and pkgbuild use the keys without a UI prompt.
+      - name: Import the signing identities
+        env:
+          APP_P12: ${{ secrets.APPLE_DEVELOPER_ID_APP_P12 }}
+          APP_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APP_P12_PASSWORD }}
+          INSTALLER_P12: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_P12 }}
+          INSTALLER_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          for v in APP_P12 APP_P12_PASSWORD INSTALLER_P12 INSTALLER_P12_PASSWORD NOTARY_KEY_P8; do
+            [ -n "${!v}" ] || { echo "::error::the secret behind $v is not available to this workflow"; exit 1; }
+          done
+          kc_password=$(openssl rand -base64 32)
+          echo "::add-mask::$kc_password"
+          security create-keychain -p "$kc_password" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$kc_password" "$KEYCHAIN"
+          certs="$RUNNER_TEMP/certs"
+          mkdir -p "$certs"
+          printf '%s' "$APP_P12" | base64 --decode > "$certs/app.p12"
+          printf '%s' "$INSTALLER_P12" | base64 --decode > "$certs/installer.p12"
+          security import "$certs/app.p12" -k "$KEYCHAIN" -f pkcs12 -P "$APP_P12_PASSWORD" \
+            -T /usr/bin/codesign >/dev/null
+          security import "$certs/installer.p12" -k "$KEYCHAIN" -f pkcs12 -P "$INSTALLER_P12_PASSWORD" \
+            -T /usr/bin/pkgbuild -T /usr/bin/productsign >/dev/null
+          rm -rf "$certs"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_password" "$KEYCHAIN" >/dev/null
+          # The keychain joins the search list, which pkgbuild --sign and
+          # notarytool's codesign checks read; the existing entries stay.
+          existing=()
+          while IFS= read -r k; do existing+=("$k"); done < <(security list-keychains -d user | sed -e 's/^ *"//' -e 's/" *$//')
+          security list-keychains -d user -s "$KEYCHAIN" "${existing[@]}"
+
+          mkdir -p "$(dirname "$NOTARY_KEY")"
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$NOTARY_KEY"
+          chmod 600 "$NOTARY_KEY"
+
+          # The identities by their certificates' names, which are public:
+          # they are what codesign -dv and pkgutil print for every signed file.
+          app=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | sed -n "s/^ *[0-9]*) \([0-9A-F]\{40\}\) \"Developer ID Application: .* (${APPLE_TEAM})\"$/\1/p" | head -n1)
+          installer=$(security find-identity -v -p basic "$KEYCHAIN" \
+            | sed -n "s/^ *[0-9]*) [0-9A-F]\{40\} \"\(Developer ID Installer: .* (${APPLE_TEAM})\)\"$/\1/p" | head -n1)
+          [ -n "$app" ] || { echo "::error::no Developer ID Application identity for team $APPLE_TEAM"; exit 1; }
+          [ -n "$installer" ] || { echo "::error::no Developer ID Installer identity for team $APPLE_TEAM"; exit 1; }
+          echo "APP_IDENTITY=$app" >> "$GITHUB_ENV"
+          echo "INSTALLER_IDENTITY=$installer" >> "$GITHUB_ENV"
+          echo "application identity $app; installer identity: $installer"
+
+      # Hardened runtime and a secure timestamp are what notarisation requires.
+      # The identifier is the package's, so a module reads as weave's in
+      # codesign -dv and in a TCC prompt rather than as its file name.
+      - name: Sign the darwin binaries
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bins=("$RUNNER_TEMP/dist/${ID}"-darwin-*)
+          [ "${#bins[@]}" -gt 0 ] || { echo "::error::the build produced no darwin binary"; exit 1; }
+          for f in "${bins[@]}"; do
+            echo "== $(basename "$f")"
+            codesign --force --sign "$APP_IDENTITY" --keychain "$KEYCHAIN" \
+              --options runtime --timestamp --identifier "run.weaveplatform.module.${ID}" "$f"
+          done
+
+      # A bare Mach-O cannot carry a stapled ticket, so Gatekeeper checks its
+      # notarisation online, by the code directory hash Apple records here.
+      - name: Notarise the darwin binaries
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          { echo "### Notarisation"; echo; echo "| File | Submission | Status |"; echo "|---|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RUNNER_TEMP/zip"
+          for f in "$RUNNER_TEMP/dist/${ID}"-darwin-*; do
+            zip="$RUNNER_TEMP/zip/$(basename "$f").zip"
+            ditto -c -k --keepParent "$f" "$zip"
+            .github/scripts/notarize.sh "$zip"
+          done
+
+      # Exactly core's check (agent-core internal/verify/codesign_darwin.go):
+      # the signature chains to Apple and its leaf carries the pinned team.
+      # Without "anchor apple generic" a self-signed certificate with a forged
+      # OU would pass. Then the TeamIdentifier core reads as defence in depth,
+      # which an ad-hoc signature does not carry.
+      - name: Verify the binaries as core does
+        run: |
+          set -euo pipefail
+          req="anchor apple generic and certificate leaf[subject.OU] = \"${APPLE_TEAM}\""
+          for f in "$RUNNER_TEMP/dist/${ID}"-darwin-*; do
+            echo "== $(basename "$f")"
+            /usr/bin/codesign --verify --strict=all -R="$req" "$f"
+            info=$(/usr/bin/codesign -d -vv "$f" 2>&1)
+            printf '%s\n' "$info"
+            team=$(printf '%s\n' "$info" | sed -n 's/^TeamIdentifier=//p')
+            [ "$team" = "$APPLE_TEAM" ] || { echo "::error::$(basename "$f") carries TeamIdentifier '$team', not $APPLE_TEAM"; exit 1; }
+            printf '%s\n' "$info" | grep -q '^Timestamp=' || { echo "::error::$(basename "$f") has no secure timestamp"; exit 1; }
+            printf '%s\n' "$info" | grep -q 'flags=0x10000(runtime)' || { echo "::error::$(basename "$f") lacks the hardened runtime"; exit 1; }
+          done
+
+      # The installer package, from the signed binary: what an operator
+      # installs by hand, and what Gatekeeper assesses on a guest. A stapled
+      # ticket lets it install offline.
+      - name: Build, sign, notarise and staple the .pkg
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          GOWORK: 'off'
+        run: |
+          set -euo pipefail
+          (cd packaging/modulepkg && go build -o "$RUNNER_TEMP/modulepkg" .)
+          mkdir -p "$RUNNER_TEMP/pkg"
+          for f in "$RUNNER_TEMP/dist/${ID}"-darwin-*; do
+            arch="${f##*-darwin-}"
+            pkg=$(WEAVE_PKG_SIGN_IDENTITY="$INSTALLER_IDENTITY" "$RUNNER_TEMP/modulepkg" \
+              -binary "$f" -manifest "$DIR/module.manifest.json" -arch "$arch" -out "$RUNNER_TEMP/pkg")
+            echo "== $(basename "$pkg")"
+            pkgutil --check-signature "$pkg"
+            .github/scripts/notarize.sh "$pkg"
+            xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
+            spctl --assess -vv --type install "$pkg"
+          done
+
+      - name: Upload the signed binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: darwin-signed
+          path: ${{ runner.temp }}/dist/${{ needs.module.outputs.id }}-darwin-*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the .pkg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: darwin-pkg
+          path: ${{ runner.temp }}/pkg/*.pkg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove the keychain and the notary key
+        if: always()
+        # The paths are fixed here rather than read from the environment: a
+        # step that failed before setting them must not turn this into
+        # removing ".".
+        run: |
+          security delete-keychain "$RUNNER_TEMP/weave-signing.keychain-db" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/notary" "$RUNNER_TEMP/certs" "$RUNNER_TEMP/zip"
+
+  publish:
+    name: 'Publish ${{ needs.module.outputs.id }} ${{ needs.module.outputs.version }}'
+    needs: [module, build, sign-darwin]
+    # sign-darwin is skipped for a module with no darwin platform, and a
+    # skipped need would skip this job too without always().
+    if: >-
+      always() && needs.module.outputs.publish == 'true' && needs.build.result == 'success'
+      && (needs.sign-darwin.result == 'success'
+          || (needs.sign-darwin.result == 'skipped' && needs.module.outputs.darwin != 'true'))
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+      packages: write
+    env:
+      DIR: ${{ needs.module.outputs.dir }}
+      ID: ${{ needs.module.outputs.id }}
+      VERSION: ${{ needs.module.outputs.version }}
+      TAG: ${{ needs.module.outputs.tag }}
+      DARWIN: ${{ needs.module.outputs.darwin }}
+      CHANNELS_REPO: weaveplatform-release-channels
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.module.outputs.ref }}
+          persist-credentials: false
+
+      - name: Download the binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: binaries
+          path: ${{ runner.temp }}/dist
+
+      - name: Download the signed darwin binaries
+        if: needs.module.outputs.darwin == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: darwin-signed
+          path: ${{ runner.temp }}/signed
+
+      - name: Download the .pkg
+        if: needs.module.outputs.darwin == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: darwin-pkg
+          path: ${{ runner.temp }}/pkg
+
+      # Every darwin binary is replaced by its signed counterpart before
+      # anything is stamped, so the digest the channel pins is the signed
+      # binary's: core checks that digest, then the signature, before exec.
+      - name: Put the signed darwin binaries in place
+        if: needs.module.outputs.darwin == 'true'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in "$RUNNER_TEMP/dist/${ID}"-darwin-*; do
+            signed="$RUNNER_TEMP/signed/$(basename "$f")"
+            [ -f "$signed" ] || { echo "::error::no signed $(basename "$f")"; exit 1; }
+            cmp -s "$f" "$signed" && { echo "::error::$(basename "$f") is unchanged by signing"; exit 1; }
+            mv "$signed" "$f"
+          done
 
       - name: Stamp the sidecar manifest
         working-directory: ${{ needs.module.outputs.dir }}
@@ -188,11 +521,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
           if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice::no release for $TAG; creating one for the artifacts"
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --generate-notes
           fi
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$RUNNER_TEMP"/dist/*
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/pkg/*.pkg
 
       # The dispatch needs write access to the channels repository, which this
       # repository's GITHUB_TOKEN never has. The org release-please App mints a
