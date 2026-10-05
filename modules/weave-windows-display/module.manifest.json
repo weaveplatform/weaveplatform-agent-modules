@@ -19,5 +19,9 @@
   "capabilities": [
     "hypervisor.channel"
   ],
-  "address": "weave.display"
+  "address": "weave.display",
+  "signing": {
+    "authenticode_subject": "weaveplatform code signing",
+    "authenticode_thumbprint": "A6A3936288B9409ED7A3458CF81014A77AB59B51"
+  }
 }
