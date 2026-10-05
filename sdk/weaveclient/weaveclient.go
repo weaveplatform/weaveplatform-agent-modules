@@ -134,9 +134,11 @@ type Client struct {
 	// a registry at all, which is what a modules.list timeout means (see
 	// ErrRegistryTimeout). baseRegistry is the part of it that came from
 	// Options.CoreVersion rather than from the wire, which a fresh
-	// authentication falls back to.
+	// authentication falls back to. refreshing is closed when the registry
+	// fetch that follows an authentication ends; nil when none has run.
 	coreRegistry registryEvidence
 	baseRegistry registryEvidence
+	refreshing   chan struct{}
 
 	done chan struct{}
 }

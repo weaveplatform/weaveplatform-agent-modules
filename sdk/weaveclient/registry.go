@@ -245,6 +245,31 @@ func (c *Client) sawRegistry() {
 	c.mu.Unlock()
 }
 
+// reportsUndeliverable reports whether core is known to answer a frame it
+// cannot deliver with delivery.failed — which arrived with the registry, so
+// the same evidence says both. When an authentication's registry fetch is
+// still out, it waits for that first: an exec started straight after
+// authenticating would otherwise send its first input before the answer that
+// says how to send it.
+func (c *Client) reportsUndeliverable(ctx context.Context) (bool, error) {
+	c.mu.Lock()
+	evidence, refreshing := c.coreRegistry, c.refreshing
+	c.mu.Unlock()
+	if evidence == registryUnknown && refreshing != nil {
+		select {
+		case <-refreshing:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-c.done:
+			return false, c.Err()
+		}
+		c.mu.Lock()
+		evidence = c.coreRegistry
+		c.mu.Unlock()
+	}
+	return evidence == registryPresent, nil
+}
+
 // registryVersion is the first weave-agent with the registry and
 // delivery.failed.
 var registryVersion = [3]int{0, 9, 2}
@@ -388,10 +413,12 @@ func (c *Client) resetModules() {
 }
 
 // refreshModules fetches a snapshot after authenticating, for the cache and
-// the change handlers; a core that does not answer is left alone.
+// the change handlers; a core that does not answer is left alone. It closes
+// done when it ends, for exec input waiting to learn what core is.
 // ctx carries Authenticate's values but not its deadline, which has done its
 // job; Options.RegistryTimeout and the channel's end bound the wait.
-func (c *Client) refreshModules(ctx context.Context) {
+func (c *Client) refreshModules(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	if _, err := c.Modules(ctx); err != nil {
 		c.log.Debug("weaveclient: no module registry after authenticating", "err", err)
 	}

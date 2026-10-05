@@ -89,7 +89,11 @@ func (c *Client) Authenticate(ctx context.Context, priv ed25519.PrivateKey) erro
 	// and is fetched again now, as core's protocol asks of a host that wants
 	// a complete view. In the background: an older core never answers, and
 	// authenticating must not wait out that silence.
-	go c.refreshModules(context.WithoutCancel(ctx))
+	refreshed := make(chan struct{})
+	c.mu.Lock()
+	c.refreshing = refreshed
+	c.mu.Unlock()
+	go c.refreshModules(context.WithoutCancel(ctx), refreshed)
 	return nil
 }
 

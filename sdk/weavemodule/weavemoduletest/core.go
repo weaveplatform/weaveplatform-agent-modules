@@ -48,10 +48,13 @@ type Core struct {
 	mu      sync.Mutex
 	modules map[string]chan modulesdk.Message
 	// registry is what modules.list reports, by module id; revision moves
-	// with every change. busy names addresses whose queue is full.
+	// with every change. busy names addresses whose queue is full; busyFor
+	// counts the frames still to be refused at an address that is full for
+	// a while.
 	registry map[string]hvchannel.ModuleInfo
 	revision uint64
 	busy     map[string]bool
+	busyFor  map[string]int
 	running  bool
 }
 
@@ -68,6 +71,7 @@ func NewCore(conn io.ReadWriteCloser, trusted ed25519.PublicKey) *Core {
 		modules:  make(map[string]chan modulesdk.Message),
 		registry: make(map[string]hvchannel.ModuleInfo),
 		busy:     make(map[string]bool),
+		busyFor:  make(map[string]int),
 	}
 }
 
@@ -105,9 +109,10 @@ func (c *Core) Serve(tb testing.TB, svc weavemodule.Service) *weavemodule.Module
 
 // SetModule adds m to the registry, or replaces the entry with its ID, and
 // pushes the new snapshot to an authenticated host. An entry whose address
-// no served module answers to stands for a module that is installed but not
-// running: a frame for it fails with not_running and the entry's State and
-// Detail.
+// no served module answers to, or whose State is not running, stands for a
+// module that is installed but not running: a frame for it fails with
+// not_running and the entry's State and Detail. Setting a served module's
+// entry back to running delivers to it again.
 func (c *Core) SetModule(m hvchannel.ModuleInfo) {
 	if m.Capabilities == nil {
 		m.Capabilities = []string{}
@@ -142,6 +147,16 @@ func (c *Core) SetBusy(address string, busy bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.busy[address] = busy
+}
+
+// SetBusyFor refuses the next frames frames for address with busy, then
+// delivers again, as core reports a module whose queue is full until the
+// module drains it. It counts every frame for the address, whatever its
+// kind. Zero clears it.
+func (c *Core) SetBusyFor(address string, frames int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.busyFor[address] = frames
 }
 
 // Modules returns the registry as core reports it: sorted by id, at the
@@ -221,6 +236,10 @@ func (c *Core) deliver(env hvchannel.Envelope) {
 	c.mu.Lock()
 	in := c.modules[env.Module]
 	busy := c.busy[env.Module]
+	if n := c.busyFor[env.Module]; n > 0 {
+		c.busyFor[env.Module] = n - 1
+		busy = true
+	}
 	var entry *hvchannel.ModuleInfo
 	for _, m := range c.registry {
 		if m.Address == env.Module {
@@ -235,6 +254,12 @@ func (c *Core) deliver(env hvchannel.Envelope) {
 	switch {
 	case busy:
 		failed.Reason = hvchannel.ReasonBusy
+	case entry != nil && entry.State != "running":
+		// Core delivers only to a module with a receiver open, which a
+		// module that is not running does not have, served or not.
+		failed.Reason = hvchannel.ReasonNotRunning
+		failed.State = entry.State
+		failed.Detail = entry.Detail
 	case in != nil:
 		// Blocking, unlike core's queue: tests stream more than 64 chunks
 		// and rely on the backpressure. SetBusy stands in for a full queue.
