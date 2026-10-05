@@ -11,8 +11,9 @@ multi-module specifics of this repository noted.
   every OS a module runs on, enforced by each module's `.testcoverage.yml`. It
   blocks merges.
 - **Layout.** The public library is the nested `sdk/` module; the capability
-  modules are `modules/weave-<os>-<capability>/`; `packaging/moduledeb` and
-  `packaging/modulepkg` are build tools, each with its own module. Project-only packages live in `internal/`.
+  modules are `modules/weave-<os>-<capability>/`; `packaging/moduledeb`,
+  `packaging/modulepkg` and `packaging/modulezip` are build tools, each with its
+  own module. Project-only packages live in `internal/`.
   Every module requires the sdk with `replace => ../../sdk`.
 - **Protocol.** agent-core owns `proto/` and keeps a private implementation; `sdk/` is
   the module side; neither it nor any module imports agent-core (CI fails one).
@@ -32,7 +33,7 @@ multi-module specifics of this repository noted.
 - **Linting.** golangci-lint with `.golangci.yml` is the only linter, and it blocks.
 - **Workspace.** This repository is a Go workspace: `go.work` is committed and lists
   every module (`sdk/`, `modules/weave-<os>-<capability>/`, `packaging/moduledeb`,
-  `packaging/modulepkg`).
+  `packaging/modulepkg`, `packaging/modulezip`).
   A new module joins `go.work`, `.github/dependabot.yml` and, when it is released,
   `release-please-config.json` and `.release-please-manifest.json` (at `0.0.0`) in
   the PR that adds it; CI fails a `go.mod` missing from `go.work`. CI also builds
@@ -52,8 +53,11 @@ multi-module specifics of this repository noted.
   module's `module.manifest.json` `version` with its release. A module tag runs
   `module-release.yml`, which refuses a tag whose directory, manifest id and
   manifest version disagree, and signs and notarises a darwin module on macOS
-  with the team its manifest pins (`signing.apple_team_id`) before stamping its
-  digest: a release weave-agent refuses an unsigned macOS module. Nothing here publishes a version below 0.2.0: the Go
+  with the team its manifest pins (`signing.apple_team_id`), and Authenticode-signs
+  a windows module on Windows with the certificate its manifest pins
+  (`signing.authenticode_thumbprint`), before stamping its digest: a release
+  weave-agent refuses an unsigned macOS or Windows module. Only the signing jobs
+  see a signing secret, with read-only tokens; only publish can write. Nothing here publishes a version below 0.2.0: the Go
   checksum database and GHCR already hold 0.1.x.
 - **Commits and PR titles** follow Conventional Commits; release-please derives
   versions and the changelog from them.

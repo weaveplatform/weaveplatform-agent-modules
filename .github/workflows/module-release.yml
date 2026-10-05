@@ -12,19 +12,26 @@ name: module-release
 #      enforces; package it as a .pkg signed with the Developer ID Installer
 #      identity, notarised and stapled. This runs on macOS, since codesign,
 #      notarytool, pkgbuild and stapler exist nowhere else;
-#   4. stamp a sidecar copy of the manifest with each artifact's digest and
+#   4. for a module with windows platforms, sign each windows binary with
+#      Authenticode (SHA-256, RFC 3161 timestamp) using the organisation's
+#      code-signing certificate, check its leaf thumbprint against the one the
+#      manifest pins and its chain with WinVerifyTrust as a guest would, and
+#      package it as a zip with signed install and uninstall scripts. This
+#      runs on Windows, where signtool and WinVerifyTrust are;
+#   5. stamp a sidecar copy of the manifest with each artifact's digest and
 #      size, taken from the signed binaries, and push the binaries and the
 #      sidecar to GHCR with ORAS as
 #      ghcr.io/<owner>/weaveplatform-modules/<id>:<version>;
-#   5. attach the same files, and any .pkg, to the module's GitHub release;
-#   6. ask weaveplatform-release-channels for a promotion PR (module-published).
+#   6. attach the same files, and any .pkg or .zip, to the module's GitHub
+#      release;
+#   7. ask weaveplatform-release-channels for a promotion PR (module-published).
 #
-# The jobs are split by what each must hold. Only the macOS signing job sees
-# the Apple certificates and notary key, and it can write nothing: its token is
-# read-only and it hands back artifacts. Only the publish job can write
+# The jobs are split by what each must hold. Only the signing jobs see a
+# signing secret, each its own OS's, and they can write nothing: their tokens
+# are read-only and they hand back artifacts. Only the publish job can write
 # packages and releases, and it never sees a signing secret. Running the whole
-# release on macOS would put both in one job and move the Linux and Windows
-# builds onto a runner they do not need.
+# release on one OS would put both in one job and move every build onto a
+# runner it does not need.
 #
 # release-please tags each module with its component, which is its path:
 # modules/weave-<os>-<capability>/vX.Y.Z. That is also the module's Go tag, so
@@ -35,7 +42,8 @@ name: module-release
 # records each artifact as <ref>#<os>-<arch> with the stamped digest and size.
 # Binaries are named <id>-<goos>-<goarch>[.exe]; the sidecar is the module's own
 # manifest with .version and .artifacts[{os, arch, digest, size}] set. The .pkg
-# goes to the GitHub release only: the channel pins binaries, not installers.
+# and .zip go to the GitHub release only: the channel pins binaries, not
+# installers.
 on:
   push:
     tags:
@@ -47,11 +55,12 @@ on:
         description: Existing tag to publish, e.g. modules/weave-linux-presence/v0.2.0
         required: false
         default: ''
-      # Prove the darwin signing path on any ref: build, sign, notarise and
-      # package one module from the dispatched ref, and upload the results as
-      # workflow artifacts. Nothing is pushed, released or dispatched.
+      # Prove a signing path on any ref: build, sign (and for macOS
+      # notarise) and package one module from the dispatched ref, and upload
+      # the results as workflow artifacts. Nothing is pushed, released or
+      # dispatched.
       sign_check:
-        description: A macOS module to sign and notarise from this ref without publishing, e.g. weave-macos-clipboard
+        description: A macOS or Windows module to sign and package from this ref without publishing, e.g. weave-windows-clipboard
         required: false
         default: ''
 
@@ -74,6 +83,7 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       publish: ${{ steps.resolve.outputs.publish }}
       darwin: ${{ steps.resolve.outputs.darwin }}
+      windows: ${{ steps.resolve.outputs.windows }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -107,8 +117,8 @@ jobs:
             # A sign check: the module at the dispatched commit, at whatever
             # version its manifest declares, published nowhere.
             case "$CHECK" in
-              weave-macos-*) ;;
-              *) echo "::error::sign_check takes a macOS module, not $CHECK"; exit 1 ;;
+              weave-macos-* | weave-windows-*) ;;
+              *) echo "::error::sign_check takes a macOS or Windows module, not $CHECK"; exit 1 ;;
             esac
             dir="modules/$CHECK"
             version=$(jq -r .version "$dir/module.manifest.json" 2>/dev/null) \
@@ -133,6 +143,7 @@ jobs:
           declared=$(jq -r .version "$manifest")
           [ "$declared" = "$version" ] || { echo "::error::$manifest version is $declared, the tag is $version"; exit 1; }
           darwin=$(jq -r 'any(.platforms[]; .os == "darwin")' "$manifest")
+          windows=$(jq -r 'any(.platforms[]; .os == "windows")' "$manifest")
           {
             echo "dir=$dir"
             echo "id=$id"
@@ -141,6 +152,7 @@ jobs:
             echo "ref=$(git rev-parse HEAD)"
             echo "publish=$publish"
             echo "darwin=$darwin"
+            echo "windows=$windows"
           } >> "$GITHUB_OUTPUT"
           if [ "$publish" = true ]; then
             echo "publishing $id $version from $dir"
@@ -408,15 +420,240 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/weave-signing.keychain-db" 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/notary" "$RUNNER_TEMP/certs" "$RUNNER_TEMP/zip"
 
+  sign-windows:
+    name: 'Sign ${{ needs.module.outputs.id }} for Windows'
+    needs: [module, build]
+    if: needs.module.outputs.windows == 'true'
+    # signtool, not osslsigncode on Linux: the job has to run WinVerifyTrust
+    # over the result anyway (the check core makes on a guest), which exists
+    # only on Windows, and signtool is Microsoft's own signer, preinstalled
+    # here, and signs the PowerShell scripts through the same call.
+    runs-on: windows-latest
+    # Read-only: this job holds the code-signing key, so it writes nothing but
+    # its own workflow artifacts.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ID: ${{ needs.module.outputs.id }}
+      DIR: ${{ needs.module.outputs.dir }}
+      # The pinned leaf certificate and its public half, as organisation
+      # variables: both are public, and the second is what core's installer
+      # trusts on a guest.
+      THUMBPRINT: ${{ vars.WINDOWS_CODESIGN_THUMBPRINT }}
+      CODESIGN_CERT: ${{ vars.WINDOWS_CODESIGN_CERT }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.module.outputs.ref }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packaging/modulezip/go.mod
+          cache: false
+
+      - name: Download the binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: binaries
+          path: ${{ runner.temp }}/dist
+
+      # The PFX lives under the runner's temp directory, which a job-level env
+      # cannot name; signtool is in the newest Windows SDK installed.
+      - name: Signing paths
+        run: |
+          $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Where-Object { $_.Directory.Parent.Name -match '^\d+(\.\d+){3}$' } |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (-not $sdk) { Write-Output '::error::no signtool.exe in any Windows SDK'; exit 1 }
+          Write-Output "signtool: $($sdk.FullName)"
+          "SIGNTOOL=$($sdk.FullName)" >> $env:GITHUB_ENV
+          "CODESIGN_PFX=$env:RUNNER_TEMP\codesign\codesign.pfx" >> $env:GITHUB_ENV
+          "CODESIGN_CER=$env:RUNNER_TEMP\codesign-public.cer" >> $env:GITHUB_ENV
+
+      # Core refuses a Windows module whose leaf certificate's thumbprint is
+      # not the one its manifest pins. Signing with a certificate the manifest
+      # does not name would publish a module no device runs, so the manifest,
+      # the THUMBPRINT variable and the public certificate must all agree.
+      - name: The manifest pins the signing certificate
+        run: |
+          if (-not $env:THUMBPRINT) { Write-Output '::error::the WINDOWS_CODESIGN_THUMBPRINT variable is not set'; exit 1 }
+          if (-not $env:CODESIGN_CERT) { Write-Output '::error::the WINDOWS_CODESIGN_CERT variable is not set'; exit 1 }
+          $want = $env:THUMBPRINT.ToUpperInvariant()
+          $signing = (Get-Content -LiteralPath "$env:DIR/module.manifest.json" -Raw | ConvertFrom-Json).signing
+          $pinned = if ($signing) { "$($signing.authenticode_thumbprint)".ToUpperInvariant() } else { '' }
+          if ($pinned -ne $want) {
+            Write-Output "::error::$env:DIR/module.manifest.json pins authenticode_thumbprint '$pinned', signing is with $want"
+            exit 1
+          }
+          # The variable holds the PEM, or the PEM base64-encoded once more.
+          $text = $env:CODESIGN_CERT.Trim()
+          if ($text -notmatch '-----BEGIN') { $text = [Text.Encoding]::ASCII.GetString([Convert]::FromBase64String($text)) }
+          $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($text)
+          if ($cert.Thumbprint -ne $want) {
+            Write-Output "::error::WINDOWS_CODESIGN_CERT is $($cert.Thumbprint) ($($cert.Subject)), not the pinned $want"
+            exit 1
+          }
+          [IO.File]::WriteAllBytes($env:CODESIGN_CER, $cert.RawData)
+          Write-Output "signing as $($cert.Subject), thumbprint $want, valid until $($cert.NotAfter.ToString('u'))"
+
+      # A real release has nothing to publish without these: core refuses an
+      # unsigned Windows module, so the job fails here rather than let publish
+      # ship binaries no device runs. The PFX is written to a directory the
+      # cleanup step removes whatever happens; its password stays in the
+      # environment of the steps that need it.
+      - name: Import the signing certificate
+        env:
+          PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: |
+          foreach ($v in 'PFX', 'PFX_PASSWORD') {
+            if (-not (Get-Item "env:$v" -ErrorAction SilentlyContinue).Value) {
+              Write-Output "::error::the secret behind $v (WINDOWS_CODESIGN_$v) is not available to this workflow; Windows modules cannot be signed"
+              exit 1
+            }
+          }
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:CODESIGN_PFX) | Out-Null
+          [IO.File]::WriteAllBytes($env:CODESIGN_PFX, [Convert]::FromBase64String($env:PFX))
+          $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+          $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($env:CODESIGN_PFX, $env:PFX_PASSWORD, $flags)
+          if (-not $cert.HasPrivateKey) { Write-Output '::error::WINDOWS_CODESIGN_PFX holds no private key'; exit 1 }
+          if ($cert.Thumbprint -ne $env:THUMBPRINT.ToUpperInvariant()) {
+            Write-Output "::error::WINDOWS_CODESIGN_PFX holds $($cert.Thumbprint) ($($cert.Subject)), not the pinned $env:THUMBPRINT"
+            exit 1
+          }
+          $cert.Dispose()
+
+      - name: Sign the windows binaries
+        env:
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: |
+          . .github/scripts/authenticode.ps1
+          $bins = @(Get-ChildItem "$env:RUNNER_TEMP\dist\$env:ID-windows-*.exe")
+          if ($bins.Count -eq 0) { Write-Output '::error::the build produced no windows binary'; exit 1 }
+          Invoke-AuthenticodeSigning -Path $bins.FullName
+          foreach ($f in $bins) { Assert-Authenticode -Path $f.FullName }
+
+      # The guest's view: core's installer adds the public certificate to the
+      # machine's Root and TrustedPublisher stores, and core runs a module
+      # only if WinVerifyTrust then accepts it and its leaf is the pinned one.
+      # The machine stores, not the user's: the service runs as SYSTEM, and
+      # adding to CurrentUser\Root raises a confirmation dialog that would hang
+      # a headless runner.
+      - name: Trust the certificate as a guest does
+        run: |
+          $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($env:CODESIGN_CER)
+          foreach ($name in 'Root', 'TrustedPublisher') {
+            $store = [Security.Cryptography.X509Certificates.X509Store]::new($name, 'LocalMachine')
+            $store.Open('ReadWrite')
+            $store.Add($cert)
+            $store.Close()
+          }
+
+      - name: Verify the binaries as core does
+        run: |
+          . .github/scripts/authenticode.ps1
+          foreach ($f in Get-ChildItem "$env:RUNNER_TEMP\dist\$env:ID-windows-*.exe") {
+            Assert-Authenticode -Path $f.FullName -Trusted
+          }
+
+      # The package an operator or guestweave installs: the signed binary and
+      # Authenticode-signed scripts, so they run under the AllSigned policy
+      # once the certificate is trusted. Each zip is then installed and
+      # removed again, under AllSigned, into a scratch directory.
+      - name: Build, sign and check the .zip packages
+        env:
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+          GOWORK: 'off'
+        run: |
+          . .github/scripts/authenticode.ps1
+          Push-Location packaging/modulezip
+          go build -o "$env:RUNNER_TEMP\modulezip.exe" .
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Pop-Location
+          $scripts = "$env:RUNNER_TEMP\scripts"
+          New-Item -ItemType Directory -Force -Path $scripts | Out-Null
+          Copy-Item packaging/modulezip/scripts/*.ps1 $scripts
+          $ps1 = @(Get-ChildItem "$scripts\*.ps1")
+          Invoke-AuthenticodeSigning -Path $ps1.FullName
+          foreach ($f in $ps1) { Assert-Authenticode -Path $f.FullName -Trusted }
+
+          $zips = "$env:RUNNER_TEMP\zip"
+          foreach ($f in Get-ChildItem "$env:RUNNER_TEMP\dist\$env:ID-windows-*.exe") {
+            $arch = $f.BaseName -replace "^$([regex]::Escape($env:ID))-windows-", ''
+            $zip = & "$env:RUNNER_TEMP\modulezip.exe" -binary $f.FullName -manifest "$env:DIR/module.manifest.json" `
+              -arch $arch -out $zips -scripts $scripts
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            Write-Output "== $(Split-Path -Leaf $zip)"
+
+            $try = Join-Path $env:RUNNER_TEMP "try-$arch"
+            Expand-Archive -LiteralPath $zip -DestinationPath "$try\pkg" -Force
+            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy AllSigned -File "$try\pkg\install.ps1" `
+              -InstallDir "$try\Weave" -NoReload
+            if ($LASTEXITCODE -ne 0) { Write-Output "::error::install.ps1 from $(Split-Path -Leaf $zip) failed"; exit 1 }
+            $installed = "$try\Weave\modules\$env:ID\$env:ID.exe"
+            if ((Get-FileHash $installed).Hash -ne (Get-FileHash $f.FullName).Hash) {
+              Write-Output "::error::install.ps1 did not install the signed binary"; exit 1
+            }
+            Assert-Authenticode -Path $installed -Trusted
+            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy AllSigned -File "$try\Weave\uninstall.d\$env:ID.ps1" -NoReload
+            if ($LASTEXITCODE -ne 0) { Write-Output "::error::the installed uninstaller failed"; exit 1 }
+            if (Test-Path "$try\Weave\modules\$env:ID") { Write-Output '::error::the uninstaller left the module behind'; exit 1 }
+          }
+
+      - name: Upload the signed binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-signed
+          path: ${{ runner.temp }}/dist/${{ needs.module.outputs.id }}-windows-*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the .zip packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-zip
+          path: ${{ runner.temp }}/zip/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove the PFX and the trusted certificate
+        if: always()
+        # The paths are fixed here rather than read from the environment: a
+        # step that failed before setting them must not turn this into
+        # removing something else.
+        env:
+          PIN: ${{ vars.WINDOWS_CODESIGN_THUMBPRINT }}
+        run: |
+          Remove-Item -LiteralPath "$env:RUNNER_TEMP\codesign" -Recurse -Force -ErrorAction SilentlyContinue
+          if ($env:PIN) {
+            foreach ($name in 'Root', 'TrustedPublisher') {
+              Remove-Item -LiteralPath "Cert:\LocalMachine\$name\$($env:PIN.ToUpperInvariant())" -ErrorAction SilentlyContinue
+            }
+          }
+
   publish:
     name: 'Publish ${{ needs.module.outputs.id }} ${{ needs.module.outputs.version }}'
-    needs: [module, build, sign-darwin]
-    # sign-darwin is skipped for a module with no darwin platform, and a
+    needs: [module, build, sign-darwin, sign-windows]
+    # A signing job is skipped for a module with no platform of its OS, and a
     # skipped need would skip this job too without always().
     if: >-
       always() && needs.module.outputs.publish == 'true' && needs.build.result == 'success'
       && (needs.sign-darwin.result == 'success'
           || (needs.sign-darwin.result == 'skipped' && needs.module.outputs.darwin != 'true'))
+      && (needs.sign-windows.result == 'success'
+          || (needs.sign-windows.result == 'skipped' && needs.module.outputs.windows != 'true'))
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
@@ -426,7 +663,6 @@ jobs:
       ID: ${{ needs.module.outputs.id }}
       VERSION: ${{ needs.module.outputs.version }}
       TAG: ${{ needs.module.outputs.tag }}
-      DARWIN: ${{ needs.module.outputs.darwin }}
       CHANNELS_REPO: weaveplatform-release-channels
     steps:
       - name: Harden Runner
@@ -460,15 +696,30 @@ jobs:
           name: darwin-pkg
           path: ${{ runner.temp }}/pkg
 
-      # Every darwin binary is replaced by its signed counterpart before
-      # anything is stamped, so the digest the channel pins is the signed
-      # binary's: core checks that digest, then the signature, before exec.
-      - name: Put the signed darwin binaries in place
-        if: needs.module.outputs.darwin == 'true'
+      - name: Download the signed windows binaries
+        if: needs.module.outputs.windows == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-signed
+          path: ${{ runner.temp }}/signed
+
+      - name: Download the .zip packages
+        if: needs.module.outputs.windows == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-zip
+          path: ${{ runner.temp }}/pkg
+
+      # Every darwin and windows binary is replaced by its signed counterpart
+      # before anything is stamped, so the digest the channel pins is the
+      # signed binary's: core checks that digest, then the signature, before
+      # exec. A binary with no signed copy fails the release rather than ship
+      # unsigned, which core would refuse on every device.
+      - name: Put the signed binaries in place
         run: |
           set -euo pipefail
           shopt -s nullglob
-          for f in "$RUNNER_TEMP/dist/${ID}"-darwin-*; do
+          for f in "$RUNNER_TEMP/dist/${ID}"-darwin-* "$RUNNER_TEMP/dist/${ID}"-windows-*; do
             signed="$RUNNER_TEMP/signed/$(basename "$f")"
             [ -f "$signed" ] || { echo "::error::no signed $(basename "$f")"; exit 1; }
             cmp -s "$f" "$signed" && { echo "::error::$(basename "$f") is unchanged by signing"; exit 1; }
@@ -525,7 +776,7 @@ jobs:
             echo "::notice::no release for $TAG; creating one for the artifacts"
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --generate-notes
           fi
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/pkg/*.pkg
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/pkg/*
 
       # The dispatch needs write access to the channels repository, which this
       # repository's GITHUB_TOKEN never has. The org release-please App mints a

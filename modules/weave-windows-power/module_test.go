@@ -88,3 +88,19 @@ func TestModuleIsHealthyWithoutAReport(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Core's release verifier runs WinVerifyTrust over a Windows module and then
+// pins the leaf certificate's SHA-1 thumbprint to the manifest's: the
+// weaveplatform code-signing certificate module-release.yml signs with. Core
+// releases up to 0.9.8 also refuse a manifest with no authenticode_subject
+// before they read the thumbprint, so the subject (the certificate's CN) is
+// pinned too; the thumbprint, when present, is what is compared.
+func TestManifestPinsTheReleaseCertificate(t *testing.T) {
+	m := loadManifest(t)
+	if m.Signing == nil ||
+		m.Signing.AuthenticodeThumbprint != "A6A3936288B9409ED7A3458CF81014A77AB59B51" ||
+		m.Signing.AuthenticodeSubject != "weaveplatform code signing" {
+		t.Errorf("signing %+v, want authenticode_thumbprint A6A3936288B9409ED7A3458CF81014A77AB59B51"+
+			" and authenticode_subject \"weaveplatform code signing\"", m.Signing)
+	}
+}

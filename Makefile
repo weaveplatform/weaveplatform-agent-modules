@@ -162,6 +162,31 @@ pkgs:
 			-manifest $$dir/module.manifest.json -arch $(PKG_ARCH) -out $(DIST); \
 	done
 
+# Windows module packages: each module built the way module-release.yml builds
+# it, then packaged by packaging/modulezip as a zip with install.ps1 and
+# uninstall.ps1. Stdlib Go, so this runs on any OS. The binaries and scripts
+# are unsigned, which a release weave-agent refuses to run; the zips attached
+# to each module's GitHub release carry the Authenticode-signed binary and
+# scripts.
+ZIP_ARCH ?= amd64
+ZIP_MODULES ?= $(filter weave-windows-%,$(notdir $(WORKSPACE)))
+MODULEZIP := $(ROOT)/.bin/modulezip
+
+## zips: Windows module .zips in dist/ (MODULES="weave-windows-presence ..."; default all; ZIP_ARCH=amd64|arm64)
+zips:
+	@mkdir -p $(ROOT)/.bin $(DIST)/.build
+	cd packaging/modulezip && GOWORK=off $(GO) build -o $(MODULEZIP) .
+	@set -e; for id in $(if $(filter command line environment,$(origin MODULES)),$(MODULES),$(ZIP_MODULES)); do \
+		case $$id in weave-windows-*) ;; *) echo "$$id is not a Windows module"; exit 1;; esac; \
+		dir=$(ROOT)/modules/$$id; \
+		[ -f $$dir/module.manifest.json ] || { echo "no module $$id under modules/"; exit 1; }; \
+		echo "== $$id windows/$(ZIP_ARCH)"; \
+		(cd $$dir && CGO_ENABLED=0 GOOS=windows GOARCH=$(ZIP_ARCH) GOWORK=off \
+			$(GO) build -trimpath -o $(DIST)/.build/$$id-windows-$(ZIP_ARCH).exe .); \
+		$(MODULEZIP) -binary $(DIST)/.build/$$id-windows-$(ZIP_ARCH).exe \
+			-manifest $$dir/module.manifest.json -arch $(ZIP_ARCH) -out $(DIST); \
+	done
+
 ## clean: remove coverage profiles and dist/
 clean:
 	@for m in $(WORKSPACE); do rm -f $$m/cover-*.out; done
@@ -170,4 +195,4 @@ clean:
 ## gate: everything CI runs, in order
 gate: vet-all-os lint test standalone cover vuln
 
-.PHONY: help modules test test-linux-clipboard standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat debs pkgs clean gate
+.PHONY: help modules test test-linux-clipboard standalone cover lint fmt vet-all-os vuln tidy sdk-gen compat debs pkgs zips clean gate

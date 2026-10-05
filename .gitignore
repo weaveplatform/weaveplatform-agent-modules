@@ -5,6 +5,7 @@
 /modules/*/weave-*
 /packaging/moduledeb/moduledeb
 /packaging/modulepkg/modulepkg
+/packaging/modulezip/modulezip
 # make debs, make pkgs
 /dist/
 *.exe
