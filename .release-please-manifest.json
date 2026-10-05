@@ -16,12 +16,12 @@
   "modules/weave-macos-presence": "0.2.1",
   "modules/weave-macos-session": "0.2.1",
   "modules/weave-macos-time": "0.2.1",
-  "modules/weave-windows-clipboard": "0.2.1",
-  "modules/weave-windows-display": "0.2.0",
-  "modules/weave-windows-exec": "0.2.0",
-  "modules/weave-windows-metrics": "0.2.0",
-  "modules/weave-windows-power": "0.2.0",
-  "modules/weave-windows-presence": "0.2.0",
-  "modules/weave-windows-session": "0.2.0",
-  "modules/weave-windows-time": "0.2.0"
+  "modules/weave-windows-clipboard": "0.2.2",
+  "modules/weave-windows-display": "0.2.1",
+  "modules/weave-windows-exec": "0.2.1",
+  "modules/weave-windows-metrics": "0.2.1",
+  "modules/weave-windows-power": "0.2.1",
+  "modules/weave-windows-presence": "0.2.1",
+  "modules/weave-windows-session": "0.2.1",
+  "modules/weave-windows-time": "0.2.1"
 }

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-windows-exec/v0.2.0...modules/weave-windows-exec/v0.2.1) (2026-10-05)
+
+
+### Features
+
+* sign and package Windows modules ([aed3ee7](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/aed3ee7a2e7c9802acfbb6ccba4aacb32d0557bb))
+
+
+### Bug Fixes
+
+* pin the weaveplatform code-signing certificate in Windows manifests ([1a53ae2](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/1a53ae2bbc9887ed55836068b931584c30542de3))
+
 ## 0.2.0 (2026-10-03)
 
 
