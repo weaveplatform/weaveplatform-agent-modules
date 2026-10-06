@@ -44,18 +44,22 @@ type staged struct {
 	failure error // why it did not arrive whole; nil once whole
 }
 
-// stageRoot is the staging root, created on first use. The caller holds mu.
+// stageRoot is the staging root, created on first use: the directory given with
+// WithStagingDir, or a directory of this run's own in the disk-backed staging
+// base (stagingBase). The caller holds mu.
 func (s *Service) stageRoot() (string, error) {
 	if s.root != "" {
 		return s.root, nil
 	}
 	dir := s.rootDir
 	if dir == "" {
-		d, err := os.MkdirTemp("", "weave-clipboard-")
+		base, err := stagingBase()
 		if err != nil {
+			return "", err
+		}
+		if dir, err = os.MkdirTemp(base, runPrefix); err != nil {
 			return "", fmt.Errorf("creating the staging directory: %w", err)
 		}
-		dir = d
 	} else if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating the staging directory: %w", err)
 	}

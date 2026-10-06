@@ -103,7 +103,10 @@ func (m *memClipboard) Write(
 
 func start(t *testing.T, b *memClipboard) *weavemoduletest.Harness {
 	t.Helper()
-	return weavemoduletest.Start(t, weaveclipboard.NewService(b))
+	return weavemoduletest.Start(
+		t,
+		weaveclipboard.NewService(b, weaveclipboard.WithStagingDir(t.TempDir())),
+	)
 }
 
 func text(s string) weavewire.ClipboardItem {
@@ -354,17 +357,23 @@ func TestGetStreamFailureEndsTheStreamWithTheCause(t *testing.T) {
 		items: []weavewire.ClipboardItem{{Format: weavewire.ClipboardText, Data: big}},
 	}
 	var failed bool
-	h := weavemoduletest.Start(t, weaveclipboard.NewService(b), func(host *weavemoduletest.Host) {
-		host.T.OnSend = func(msg modulesdk.Message) error {
-			var c weavewire.Chunk
-			if msg.Kind == weavewire.KindClipboardDownload && json.Unmarshal(msg.Data, &c) == nil &&
-				!c.EOF && !failed {
-				failed = true
-				return errors.New("channel full")
+	h := weavemoduletest.Start(
+		t,
+		weaveclipboard.NewService(b, weaveclipboard.WithStagingDir(t.TempDir())),
+		func(host *weavemoduletest.Host) {
+			host.T.OnSend = func(msg modulesdk.Message) error {
+				var c weavewire.Chunk
+				if msg.Kind == weavewire.KindClipboardDownload &&
+					json.Unmarshal(msg.Data, &c) == nil &&
+					!c.EOF &&
+					!failed {
+					failed = true
+					return errors.New("channel full")
+				}
+				return nil
 			}
-			return nil
-		}
-	})
+		},
+	)
 	if res := h.Call(
 		weavewire.KindClipboardGet,
 		weavewire.ClipboardGetRequest{TransferID: "t"},
@@ -629,7 +638,10 @@ func TestStatReportsWhatTheBackendHolds(t *testing.T) {
 	}
 
 	b := &described{}
-	h := weavemoduletest.Start(t, weaveclipboard.NewService(b))
+	h := weavemoduletest.Start(
+		t,
+		weaveclipboard.NewService(b, weaveclipboard.WithStagingDir(t.TempDir())),
+	)
 	h.Decode(weavewire.KindClipboardStat, nil, &st)
 	if !st.SingleRepresentation || st.Limitation != "one at a time" {
 		t.Fatalf("stat = %+v", st)
@@ -647,7 +659,10 @@ func TestStatReportsWhatTheBackendHolds(t *testing.T) {
 // reported as well.
 func TestSetReportsWhatItDidNotWrite(t *testing.T) {
 	b := &described{}
-	h := weavemoduletest.Start(t, weaveclipboard.NewService(b))
+	h := weavemoduletest.Start(
+		t,
+		weaveclipboard.NewService(b, weaveclipboard.WithStagingDir(t.TempDir())),
+	)
 	var got weavewire.ClipboardSetResponse
 	h.Decode(
 		weavewire.KindClipboardSet,

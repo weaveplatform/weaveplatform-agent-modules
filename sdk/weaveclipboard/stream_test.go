@@ -834,8 +834,12 @@ func TestStagingFailures(t *testing.T) {
 		t.Error("an inline file staged under a file")
 	}
 
-	// Without a staging directory of its own, it makes a temporary one.
-	setTemp(t, t.TempDir())
+	// Without a staging directory of its own, it stages in a run directory of
+	// its own under the user's cache directory.
+	cache := t.TempDir()
+	t.Cleanup(
+		weaveclipboard.UseStaging(func() (string, error) { return cache, nil }, t.TempDir(), nil),
+	)
 	b := &fileClipboard{}
 	h = weavemoduletest.Start(t, weaveclipboard.NewService(b))
 	var res weavewire.ClipboardSetResponse
@@ -846,15 +850,25 @@ func TestStagingFailures(t *testing.T) {
 		}},
 		&res,
 	)
-	if p := b.lastPaths(); len(p) != 1 || !strings.HasPrefix(p[0], os.TempDir()) {
-		t.Errorf("staged at %v", p)
+	base := filepath.Join(cache, "weave", "clipboard")
+	if p := b.lastPaths(); len(p) != 1 || !strings.HasPrefix(p[0], filepath.Join(base, "run-")) {
+		t.Errorf("staged at %v, want a run directory in %s", p, base)
 	}
-	setTemp(t, filepath.Join(t.TempDir(), "absent"))
+
+	// With nowhere to make one, staging fails, saying so.
+	blocked := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(
+		weaveclipboard.UseStaging(func() (string, error) { return blocked, nil }, blocked, nil),
+	)
+	setTemp(t, blocked)
 	h = weavemoduletest.Start(t, weaveclipboard.NewService(b))
 	if res := h.Call(weavewire.KindClipboardStage, weavewire.ClipboardStageRequest{
 		TransferID: "t", StreamID: "s", Format: weavewire.ClipboardPNG,
 	}); res.Err == "" {
-		t.Error("staged with no temporary directory")
+		t.Error("staged with nowhere to stage")
 	}
 
 	// A refused name, and a backend that fails, leave nothing staged.

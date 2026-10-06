@@ -468,7 +468,10 @@ func TestABitmapOnlyCopyIsPNG(t *testing.T) {
 		{rgb(255, 255, 255), rgb(0, 0, 0), rgb(255, 0, 0)},
 	})
 
-	h := weavemoduletest.Start(t, weaveclipboard.NewService(c))
+	h := weavemoduletest.Start(
+		t,
+		weaveclipboard.NewService(c, weaveclipboard.WithStagingDir(t.TempDir())),
+	)
 	var sized weavewire.ClipboardStatResponse
 	h.Decode(weavewire.KindClipboardStat, nil, &sized)
 	if len(sized.Formats) != 1 || sized.Formats[0].Size != int64(len(got.Items[0].Data)) {
