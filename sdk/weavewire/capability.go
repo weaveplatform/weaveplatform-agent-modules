@@ -81,6 +81,8 @@ var capabilityOps = map[Capability][]string{
 	Metrics:  sorted(KindMetricsSample),
 	Clipboard: sorted(
 		KindClipboardStat, KindClipboardGet, KindClipboardSet, KindClipboardUpload,
+		KindClipboardFetch, KindClipboardStage, KindClipboardPut, KindClipboardCredit,
+		KindClipboardCancel,
 	),
 	Session: sorted(KindSessionCurrent, KindSessionList, KindSessionLock),
 	Display: sorted(KindDisplayList, KindDisplaySet),

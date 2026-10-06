@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveclipboard"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
@@ -66,6 +67,9 @@ func (m *memMech) read(_ context.Context, target string) ([]byte, error) {
 	}
 	for _, o := range m.offers {
 		if o.target == target {
+			if int64(len(o.data)) > maxRead {
+				return nil, errTooLarge // as every real mechanism does
+			}
 			return o.data, nil
 		}
 	}
@@ -272,16 +276,27 @@ func TestStatAndRead(t *testing.T) {
 		got = append(got, string(it.Format)+":"+it.Name+":"+string(it.Data))
 	}
 	if want := []string{
-		"files:small.txt:ab",
-		"files:big.bin:",
 		`text/rtf::{\rtf1}`,
 		"text/plain::small.txt big.bin",
 	}; !slices.Equal(got, want) || all.ChangeToken != 9 {
 		t.Errorf("items = %q at %d, want %q", got, all.ChangeToken, want)
 	}
-	if all.Items[1].Size != 100 {
-		t.Errorf("omitted file size = %d, want 100", all.Items[1].Size)
+	// Files are offered by path, sized and unread, whatever the cap: the
+	// service streams them, or judges them against it.
+	if len(all.Files) != 2 ||
+		all.Files[0] != (weaveclipboard.File{Name: "small.txt", Path: small, Size: 2}) ||
+		all.Files[1] != (weaveclipboard.File{Name: "big.bin", Path: big, Size: 100}) {
+		t.Errorf("files = %+v", all.Files)
 	}
+
+	// A representation too large to hold is sized and unread, never cut short.
+	defer func(n int64) { maxRead = n }(maxRead)
+	maxRead = 4
+	over, err := c.Read(ctx, []weavewire.ClipboardFormat{weavewire.ClipboardRTF}, 1<<20)
+	if err != nil || len(over.Items) != 1 || over.Items[0].Data != nil || over.Items[0].Size != 5 {
+		t.Errorf("an over-large read: %+v, %v", over.Items, err)
+	}
+	maxRead = 1 << 20
 	text, err := c.Read(ctx, []weavewire.ClipboardFormat{weavewire.ClipboardText}, 1<<20)
 	if err != nil || len(text.Items) != 1 {
 		t.Errorf("text only: %+v, %v", text.Items, err)
@@ -419,6 +434,14 @@ func TestToolsHoldTheRichestRepresentation(t *testing.T) {
 	}
 	if s := c.Support(); !s.SingleRepresentation {
 		t.Error("the tools hold more than one representation")
+	}
+
+	// Over what one read may hold, it is sized and unread, never cut short.
+	defer func(n int64) { maxRead = n }(maxRead)
+	maxRead = 0
+	over, err := c.Read(ctx, nil, 1<<20)
+	if err != nil || len(over.Items) != 1 || over.Items[0].Data != nil || over.Items[0].Size != 1 {
+		t.Errorf("an over-large read: %+v, %v", over.Items, err)
 	}
 }
 

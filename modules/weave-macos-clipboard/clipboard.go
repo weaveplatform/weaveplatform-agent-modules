@@ -193,11 +193,12 @@ func token(count int) uint64 {
 const readAttempts = 3
 
 // Read returns the representations asked for, and the change count they were
-// read at.
+// read at. The pasteboard hands over a representation's data whole, so the
+// cap is the service's to apply; files are offered by path.
 func (c *clipboard) Read(
 	_ context.Context,
 	formats []weavewire.ClipboardFormat,
-	maxBytes int64,
+	_ int64,
 ) (weaveclipboard.Contents, error) {
 	var out weaveclipboard.Contents
 	err := c.do(weavewire.KindClipboardGet, func(pb *appkit.Pasteboard) error {
@@ -208,7 +209,8 @@ func (c *clipboard) Read(
 				switch {
 				case len(formats) > 0 && !slices.Contains(formats, f):
 				case f == weavewire.ClipboardFiles:
-					out.Items = append(out.Items, readFiles(filePaths(pb), maxBytes)...)
+					// By path, unread: the service streams them from disk.
+					out.Files = weaveclipboard.FilesAt(filePaths(pb))
 				default:
 					if data := pb.DataForType(uti(f)); data != nil {
 						out.Items = append(out.Items, weavewire.ClipboardItem{
@@ -232,19 +234,29 @@ var errRefused = errors.New("the pasteboard refused the write")
 // pasteboard item, as an application's own copy does; files are staged and
 // written as items of their own, one per file, which is what Finder pastes.
 func (c *clipboard) Write(
-	_ context.Context,
+	ctx context.Context,
 	items []weavewire.ClipboardItem,
 ) (weavewire.ClipboardSetResponse, error) {
-	var resp weavewire.ClipboardSetResponse
 	var paths []string
 	if slices.ContainsFunc(items, func(it weavewire.ClipboardItem) bool {
 		return it.Format == weavewire.ClipboardFiles
 	}) {
 		var err error
 		if paths, err = c.stage.files(items); err != nil {
-			return resp, err
+			return weavewire.ClipboardSetResponse{}, err
 		}
 	}
+	return c.WriteFiles(ctx, items, paths)
+}
+
+// WriteFiles is Write with the files already staged, at paths: the service
+// streams a host's files to disk and hands them over here by path.
+func (c *clipboard) WriteFiles(
+	_ context.Context,
+	items []weavewire.ClipboardItem,
+	paths []string,
+) (weavewire.ClipboardSetResponse, error) {
+	var resp weavewire.ClipboardSetResponse
 	err := c.do(weavewire.KindClipboardSet, func(pb *appkit.Pasteboard) error {
 		pb.ClearContents()
 		if len(paths) > 0 {

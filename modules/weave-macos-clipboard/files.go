@@ -79,38 +79,3 @@ func fileName(name string) (string, error) {
 	}
 	return base, nil
 }
-
-// readFiles reads each copied file's content: the paths mean nothing on the
-// host, so the content is what crosses. A directory or unreadable path is
-// skipped, and a file over maxBytes is returned with its size and no data so
-// the service lists it as omitted rather than truncating it.
-func readFiles(paths []string, maxBytes int64) []weavewire.ClipboardItem {
-	var out []weavewire.ClipboardItem
-	for _, p := range paths {
-		fi, err := os.Stat(p)
-		if err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		it := weavewire.ClipboardItem{
-			Format: weavewire.ClipboardFiles,
-			Name:   baseName(p),
-			Size:   fi.Size(),
-		}
-		if fi.Size() <= maxBytes {
-			data, err := os.ReadFile(p) //nolint:gosec // G304: the path is one the user copied
-			if err != nil {
-				continue
-			}
-			it.Data, it.Size = data, int64(len(data))
-		}
-		out = append(out, it)
-	}
-	return out
-}
-
-func baseName(p string) string {
-	if i := strings.LastIndexByte(p, '/'); i >= 0 {
-		return p[i+1:]
-	}
-	return p
-}

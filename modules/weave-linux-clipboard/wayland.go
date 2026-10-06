@@ -249,12 +249,14 @@ func (d *dataControl) run() {
 	err := d.c.read(d.handle)
 	d.mu.Lock()
 	d.err = err
+	// done closes before the round trips are woken: one woken first would
+	// find the connection still alive and report its sync as answered.
+	close(d.done)
 	for _, ch := range d.syncs {
 		close(ch)
 	}
 	clear(d.syncs)
 	d.mu.Unlock()
-	close(d.done)
 }
 
 // roundtrip waits until the compositor has handled every request sent so
@@ -475,9 +477,12 @@ func (d *dataControl) read(ctx context.Context, mime string) ([]byte, error) {
 		deadline = dl
 	}
 	_ = r.SetReadDeadline(deadline)
-	data, err := io.ReadAll(io.LimitReader(r, maxRead))
+	data, err := io.ReadAll(io.LimitReader(r, maxRead+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s from the clipboard: %w", mime, err)
+	}
+	if int64(len(data)) > maxRead {
+		return nil, fmt.Errorf("%s: %w", mime, errTooLarge)
 	}
 	return data, nil
 }

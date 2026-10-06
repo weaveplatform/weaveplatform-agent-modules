@@ -42,13 +42,26 @@ func (c *Client) ClipboardGet(
 	ctx context.Context,
 	req weavewire.ClipboardGetRequest,
 ) (weavewire.ClipboardGetResponse, error) {
+	return c.ClipboardGetWith(ctx, req, TransferOptions{})
+}
+
+// ClipboardGetWith is ClipboardGet with options for a streaming get
+// (req.Stream, to a module whose stat reports Streaming): opts.Pace paces the
+// credits that let the guest send, opts.Progress hears of each chunk, and
+// nothing is capped in total. A streaming get's files come back Deferred,
+// sized and without data; fetch each one wanted with ClipboardFetch.
+func (c *Client) ClipboardGetWith(
+	ctx context.Context,
+	req weavewire.ClipboardGetRequest,
+	opts TransferOptions,
+) (weavewire.ClipboardGetResponse, error) {
 	if req.TransferID == "" {
-		req.TransferID = c.idPrefix + "-clip-" + strconv.FormatUint(c.nextID.Add(1), 10)
+		req.TransferID = c.mintTransfer()
 	}
 	// Registered before the request goes out: the chunks follow the reply
 	// down the same ordered channel, and the read loop may route the first of
 	// them before this goroutine has even seen the reply.
-	d := c.registerDownload(req.TransferID)
+	d := c.registerDownload(req.TransferID, req.Stream)
 	defer c.unregisterDownload(req.TransferID)
 
 	var out weavewire.ClipboardGetResponse
@@ -58,13 +71,23 @@ func (c *Client) ClipboardGet(
 	if !out.Streamed {
 		return out, nil
 	}
-	body, err := c.awaitDownload(ctx, d)
+	stall := c.sessionTimeout
+	if req.Stream {
+		stop := c.creditDownload(ctx, req.TransferID, d, opts)
+		defer stop()
+		// Paced, a stream may rightly pause between chunks for as long as the
+		// policy holds the credit back.
+		stall = opts.idle()
+	}
+	body, err := c.awaitDownload(ctx, d, stall)
 	if err != nil {
 		return out, err
 	}
 	var want int64
 	for _, it := range out.Items {
-		want += it.Size
+		if !it.Deferred {
+			want += it.Size
+		}
 	}
 	if int64(len(body)) != want {
 		return out, fmt.Errorf(
@@ -75,16 +98,29 @@ func (c *Client) ClipboardGet(
 		)
 	}
 	for i := range out.Items {
+		if out.Items[i].Deferred {
+			continue
+		}
 		n := out.Items[i].Size
 		out.Items[i].Data, body = body[:n:n], body[n:]
 	}
 	return out, nil
 }
 
+// mintTransfer is a transfer or stream id unique to this client.
+func (c *Client) mintTransfer() string {
+	return c.idPrefix + "-clip-" + strconv.FormatUint(c.nextID.Add(1), 10)
+}
+
 // ClipboardSet replaces the guest clipboard with items, every one a
 // representation of the same content. Each item needs its Format and Data;
 // Size is filled in. Content over weavewire.ClipboardInlineBytes is uploaded
 // as chunks first, transparently.
+//
+// This is the older transfer, held in memory and capped at
+// weavewire.MaxClipboardBytes in all: the one a module from before streaming
+// transfer speaks. With a module whose stat reports Streaming, ClipboardSend
+// carries content of any size, files streamed from disk.
 //
 // The response's ChangeToken is the clipboard's token after the write: record
 // it, so the next ClipboardStat does not read the host's own write as a guest
@@ -109,7 +145,7 @@ func (c *Client) ClipboardSet(
 		)
 	}
 	if total > weavewire.ClipboardInlineBytes {
-		req.TransferID = c.idPrefix + "-clip-" + strconv.FormatUint(c.nextID.Add(1), 10)
+		req.TransferID = c.mintTransfer()
 		if err := c.upload(req.TransferID, req.Items); err != nil {
 			return weavewire.ClipboardSetResponse{}, err
 		}
@@ -146,14 +182,19 @@ func (c *Client) upload(id string, items []weavewire.ClipboardItem) error {
 
 // download collects one get's chunk stream as the read loop routes it.
 type download struct {
-	mu   sync.Mutex
-	asm  weavewire.StreamAssembler
-	buf  bytes.Buffer
-	err  error
-	done chan struct{} // closed at EOF or on the first failure
+	mu sync.Mutex
+	// stream marks a streaming get's download: flow-controlled, uncapped,
+	// and checked against the digest its EOF carries.
+	stream bool
+	asm    weavewire.StreamAssembler
+	buf    bytes.Buffer
+	err    error
+	done   chan struct{} // closed at EOF or on the first failure
 	// progress is signalled per chunk, so a waiter can tell a slow stream
-	// from one whose module went away mid-transfer.
+	// from one whose module went away mid-transfer; credit likewise, for
+	// the goroutine that acknowledges a streaming get's bytes.
 	progress chan struct{}
+	credit   chan struct{}
 }
 
 func (d *download) accept(ch weavewire.Chunk) {
@@ -166,20 +207,27 @@ func (d *download) accept(ch weavewire.Chunk) {
 	switch {
 	case err != nil:
 		d.err = fmt.Errorf("%w: %w", ErrTransfer, err)
-	case d.buf.Len()+len(data) > weavewire.MaxClipboardBytes:
+	case !d.stream && d.buf.Len()+len(data) > weavewire.MaxClipboardBytes:
 		d.err = fmt.Errorf("%w: over the %d-byte limit", ErrTransfer, weavewire.MaxClipboardBytes)
 	default:
 		d.buf.Write(data)
 		if d.asm.Done() {
 			if err := d.asm.Err(); err != nil {
 				d.err = fmt.Errorf("%w: %w", ErrTransfer, err)
+			} else if d.stream && ch.Digest != digestOf(d.buf.Bytes()) {
+				d.err = fmt.Errorf("%w: the content's SHA-256 is not the guest's", ErrTransfer)
+			}
+			if d.err != nil {
+				d.buf = bytes.Buffer{}
 			}
 			close(d.done)
 			return
 		}
-		select {
-		case d.progress <- struct{}{}:
-		default:
+		for _, ch := range []chan struct{}{d.progress, d.credit} {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
 		}
 		return
 	}
@@ -187,20 +235,33 @@ func (d *download) accept(ch weavewire.Chunk) {
 	close(d.done)
 }
 
-func (c *Client) registerDownload(id string) *download {
-	d := &download{done: make(chan struct{}), progress: make(chan struct{}, 1)}
+func (c *Client) registerDownload(id string, stream bool) *download {
+	d := &download{
+		stream:   stream,
+		done:     make(chan struct{}),
+		progress: make(chan struct{}, 1),
+		credit:   make(chan struct{}, 1),
+	}
 	c.mu.Lock()
 	if c.downloads == nil {
 		c.downloads = make(map[string]*download)
 	}
 	c.downloads[id] = d
+	c.mu.Unlock()
+	c.installClipboardHandlers()
+	return d
+}
+
+// installClipboardHandlers routes clipboard stream events, once per client.
+func (c *Client) installClipboardHandlers() {
+	c.mu.Lock()
 	install := !c.downloadHandler
 	c.downloadHandler = true
 	c.mu.Unlock()
 	if install {
 		c.On(weavewire.KindClipboardDownload, c.routeDownload)
+		c.On(weavewire.KindClipboardStaged, c.routeStaged)
 	}
-	return d
 }
 
 func (c *Client) unregisterDownload(id string) {
@@ -217,9 +278,13 @@ func (c *Client) routeDownload(_ string, data []byte) {
 	}
 	c.mu.Lock()
 	d := c.downloads[ch.StreamID]
+	f := c.fetches[ch.StreamID]
 	c.mu.Unlock()
 	if d != nil {
 		d.accept(ch)
+	}
+	if f != nil {
+		f.accept(ch)
 	}
 }
 
@@ -227,11 +292,15 @@ func (c *Client) routeDownload(_ string, data []byte) {
 // stream that stops making progress for Options.SessionTimeout is abandoned
 // as ErrNoSession: the clipboard module lives in the console session, and a
 // logout mid-transfer stops it with the stream unfinished.
-func (c *Client) awaitDownload(ctx context.Context, d *download) ([]byte, error) {
+func (c *Client) awaitDownload(
+	ctx context.Context,
+	d *download,
+	idle time.Duration,
+) ([]byte, error) {
 	var stall <-chan time.Time
 	var timer *time.Timer
-	if c.sessionTimeout > 0 {
-		timer = time.NewTimer(c.sessionTimeout)
+	if idle > 0 {
+		timer = time.NewTimer(idle)
 		defer timer.Stop()
 		stall = timer.C
 	}
@@ -246,7 +315,7 @@ func (c *Client) awaitDownload(ctx context.Context, d *download) ([]byte, error)
 			return d.buf.Bytes(), nil
 		case <-d.progress:
 			if timer != nil {
-				timer.Reset(c.sessionTimeout)
+				timer.Reset(idle)
 			}
 		case <-stall:
 			return nil, fmt.Errorf("%w: the clipboard stream stopped: %w",

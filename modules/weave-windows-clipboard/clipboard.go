@@ -218,11 +218,12 @@ func (c *clipboard) Stat(context.Context) (weavewire.ClipboardStatResponse, erro
 
 // Read returns the representations asked for. Nothing can change the
 // clipboard while it is open, so the read is consistent with the sequence
-// number read alongside it.
+// number read alongside it. A representation is handed over whole, so the
+// host's cap is the service's to apply; files are offered by path.
 func (c *clipboard) Read(
 	_ context.Context,
 	formats []weavewire.ClipboardFormat,
-	maxBytes int64,
+	_ int64,
 ) (weaveclipboard.Contents, error) {
 	var out weaveclipboard.Contents
 	err := c.withOpen(func() error {
@@ -233,7 +234,8 @@ func (c *clipboard) Read(
 				continue
 			}
 			if f == weavewire.ClipboardFiles {
-				out.Items = append(out.Items, readFiles(c.files(), maxBytes)...)
+				// By path, unread: the service streams them from disk.
+				out.Files = weaveclipboard.FilesAt(c.files())
 				continue
 			}
 			if f == weavewire.ClipboardPNG && !o.png {
@@ -267,19 +269,29 @@ func (c *clipboard) Read(
 // it. Files are staged and offered as CF_HDROP, the shape Explorer copies, so
 // a paste anywhere copies real files.
 func (c *clipboard) Write(
-	_ context.Context,
+	ctx context.Context,
 	items []weavewire.ClipboardItem,
 ) (weavewire.ClipboardSetResponse, error) {
-	var resp weavewire.ClipboardSetResponse
 	var paths []string
 	if slices.ContainsFunc(items, func(it weavewire.ClipboardItem) bool {
 		return it.Format == weavewire.ClipboardFiles
 	}) {
 		var err error
 		if paths, err = c.stage.files(items); err != nil {
-			return resp, err
+			return weavewire.ClipboardSetResponse{}, err
 		}
 	}
+	return c.WriteFiles(ctx, items, paths)
+}
+
+// WriteFiles is Write with the files already staged, at paths: the service
+// streams a host's files to disk and hands them over here by path.
+func (c *clipboard) WriteFiles(
+	_ context.Context,
+	items []weavewire.ClipboardItem,
+	paths []string,
+) (weavewire.ClipboardSetResponse, error) {
+	var resp weavewire.ClipboardSetResponse
 	err := c.withOpen(func() error {
 		if err := c.w.empty(); err != nil {
 			return fmt.Errorf("EmptyClipboard: %w", err)

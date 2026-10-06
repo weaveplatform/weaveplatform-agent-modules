@@ -32,8 +32,60 @@ const (
 )
 
 // KindClipboardDownload is the guest-to-host event carrying a Chunk of a get's
-// content, under the get's TransferID. No correlation id: it answers nothing.
+// content, under the get's TransferID, or of a fetched file, under the
+// fetch's StreamID. No correlation id: it answers nothing.
 const KindClipboardDownload = "weave.clipboard.download"
+
+// Streaming transfer: content of any size, files streamed from and to disk.
+//
+// A module that speaks it says so in ClipboardStatResponse.Streaming. A host
+// then never holds a whole file in memory, and neither does the guest:
+//
+//   - Guest to host, the host asks a streaming get (ClipboardGetRequest.Stream).
+//     The reply lists each file as a Deferred item, sized and without data;
+//     the other representations follow as download chunks as before. The host
+//     judges each file against its own bounds and fetches the ones it takes,
+//     one KindClipboardFetch each, whose bytes follow as download chunks under
+//     the fetch's StreamID.
+//   - Host to guest, the host stages each item too large to carry inline:
+//     KindClipboardStage, whose reply says whether the guest has room for it,
+//     then its bytes as KindClipboardPut chunks. The guest writes them to disk
+//     as they arrive and answers with KindClipboardStaged once the file is
+//     whole and its digest matches. The set that follows names each staged
+//     item by its Stream; nothing staged reaches the clipboard before it.
+//
+// Every stream is flow-controlled by its receiver: the sender keeps at most
+// ClipboardWindowBytes unacknowledged, and the receiver acknowledges what it has
+// written (KindClipboardCredit from the host, KindClipboardStaged from the
+// guest). So a transfer of any size holds at most a window in any queue on the
+// channel, and the exec, power and control frames that share it are never
+// queued behind it. Each stream's EOF chunk carries the SHA-256 of what was
+// sent (Chunk.Digest), checked against what was written.
+//
+// A new transfer supersedes every older one: a streaming get or a stage for
+// another TransferID cancels whatever the older one still had in flight and
+// deletes what it staged, and KindClipboardCancel does the same at once.
+const (
+	// KindClipboardFetch asks for one Deferred file of a streaming get
+	// (ClipboardFetchRequest). Its bytes follow the reply as download chunks.
+	KindClipboardFetch = "weave.clipboard.fetch"
+	// KindClipboardStage readies the guest to receive one item of a set
+	// (ClipboardStageRequest); the reply says whether it has room.
+	KindClipboardStage = "weave.clipboard.stage"
+	// KindClipboardPut carries a Chunk of a staged item, sent without a
+	// correlation id and applied in order (IsOrderedInbound).
+	KindClipboardPut = "weave.clipboard.put"
+	// KindClipboardCredit acknowledges the bytes the host has written of a
+	// download stream (ClipboardCredit), letting the guest send more.
+	KindClipboardCredit = "weave.clipboard.credit"
+	// KindClipboardCancel abandons a transfer (ClipboardCancel).
+	KindClipboardCancel = "weave.clipboard.cancel"
+)
+
+// KindClipboardStaged is the guest-to-host event acknowledging a staged item's
+// bytes as the guest writes them, and saying at the end whether the item is
+// whole (ClipboardStaged).
+const KindClipboardStaged = "weave.clipboard.staged"
 
 // Size limits.
 const (
@@ -43,10 +95,45 @@ const (
 	// third, so this stays an order of magnitude under gRPC's 4 MiB default
 	// for the same reason MaxChunkBytes does.
 	ClipboardInlineBytes = 256 << 10
-	// MaxClipboardBytes caps one get or set in total. A clipboard is a
-	// desktop convenience, not a file transfer, and a guest holding a whole
-	// transfer in memory while it reassembles it needs a ceiling.
+	// MaxClipboardBytes caps one get or set that does not stream — from a
+	// host or a module older than streaming transfer — in total. That path
+	// holds a whole transfer in memory on both sides while it reassembles
+	// it, so it needs a ceiling. A streaming transfer has none.
 	MaxClipboardBytes = 64 << 20
+	// ClipboardWindowBytes is how much of one stream a sender may have sent
+	// and not had acknowledged. It is a few dozen chunks: enough to keep the
+	// channel busy across a round trip, and far fewer than the queues a
+	// receiver's module and core hold (64 messages each), so a stream never
+	// fills one and stalls the frames behind it.
+	ClipboardWindowBytes = 1 << 20
+	// ClipboardCreditBytes is how often a receiver acknowledges: every this
+	// many bytes written, and at the end. A receiver that paces its
+	// acknowledgements to a bandwidth policy acknowledges every chunk, so a
+	// slow policy never leaves the sender waiting long for the next.
+	ClipboardCreditBytes = 256 << 10
+	// MaxClipboardRepresentationBytes caps one representation other than a
+	// file. Those live in memory on both sides — the OS's clipboard holds
+	// them there — so one larger than this is left out and reported as
+	// omitted, never truncated. Files stream from disk and have no cap.
+	MaxClipboardRepresentationBytes = 1 << 30
+)
+
+// Reasons a streaming transfer gives for an item that did not cross
+// (ClipboardStageResponse.Refused, ClipboardStaged.Reason, and a fetch's
+// failure). Each is about one item: the rest of the copy still crosses.
+const (
+	// ClipboardReasonNoSpace: the receiving disk has no room for the item and
+	// the safety margin.
+	ClipboardReasonNoSpace = "no-space"
+	// ClipboardReasonIntegrity: what arrived is not what was sent — its size
+	// or digest differs, or the stream lost chunks.
+	ClipboardReasonIntegrity = "integrity"
+	// ClipboardReasonUnreadable: the source could not read the item (a file
+	// deleted or changed since it was copied).
+	ClipboardReasonUnreadable = "unreadable"
+	// ClipboardReasonCancelled: the transfer was cancelled or superseded by a
+	// newer copy.
+	ClipboardReasonCancelled = "cancelled"
 )
 
 // ClipboardFormat names one representation of clipboard content. The values
@@ -143,6 +230,11 @@ type ClipboardStatResponse struct {
 	// Limitation describes, for an operator, anything that keeps this
 	// guest's clipboard from holding every canonical format at once.
 	Limitation string `json:"limitation,omitempty"`
+	// Streaming reports a module that speaks streaming transfer (fetch,
+	// stage, put, credit, cancel): content of any size, files from and to
+	// disk. False from a module older than it, whose gets and sets carry at
+	// most MaxClipboardBytes in all.
+	Streaming bool `json:"streaming,omitempty"`
 }
 
 // ClipboardItem is one representation: in a get's reply, one the guest read;
@@ -156,6 +248,13 @@ type ClipboardItem struct {
 	Size int64 `json:"size"`
 	// Data is the content when it travels inline; empty when it is streamed.
 	Data []byte `json:"data,omitempty"`
+	// Deferred marks, in a streaming get's reply, a file whose bytes do not
+	// follow the reply: the host fetches it by its index in Items
+	// (KindClipboardFetch), if it takes it at all.
+	Deferred bool `json:"deferred,omitempty"`
+	// Stream names, in a set, the staged stream (ClipboardStageRequest's
+	// StreamID) that already carried this item's bytes to the guest.
+	Stream string `json:"stream,omitempty"`
 }
 
 // ClipboardGetRequest asks for the clipboard's content.
@@ -175,6 +274,11 @@ type ClipboardGetRequest struct {
 	// same ordered channel (see ExecRequest.ExecID). Without one, content
 	// over the inline limit is refused.
 	TransferID string `json:"transfer_id,omitempty"`
+	// Stream asks for a streaming get, from a host that speaks streaming
+	// transfer (see ClipboardStatResponse.Streaming): files come back
+	// Deferred, the download stream is flow-controlled by KindClipboardCredit,
+	// and nothing is capped in total. MaxBytes still caps each item.
+	Stream bool `json:"stream,omitempty"`
 }
 
 // ClipboardGetResponse is one consistent read of the clipboard.
@@ -221,4 +325,73 @@ type ClipboardSetResponse struct {
 	// a single-representation clipboard dropped for a richer one. A host
 	// reports them rather than assume the guest holds what it sent.
 	Unwritten []ClipboardFormat `json:"unwritten,omitempty"`
+}
+
+// ClipboardFetchRequest asks for one Deferred file of a streaming get.
+type ClipboardFetchRequest struct {
+	// TransferID is the streaming get's. A get for another transfer since
+	// has superseded it, and the fetch is refused.
+	TransferID string `json:"transfer_id"`
+	// Index is the file's index in the get's Items.
+	Index int `json:"index"`
+	// StreamID is minted by the host and names the download chunks that
+	// carry the file, which follow the reply.
+	StreamID string `json:"stream_id"`
+}
+
+// ClipboardFetchResponse answers a fetch: the file's size, which the stream
+// that follows carries exactly.
+type ClipboardFetchResponse struct {
+	Size int64 `json:"size"`
+}
+
+// ClipboardStageRequest readies the guest to receive one item of a set as
+// KindClipboardPut chunks under StreamID.
+type ClipboardStageRequest struct {
+	// TransferID names the set the item belongs to. A stage for a new
+	// transfer supersedes every older one.
+	TransferID string          `json:"transfer_id"`
+	StreamID   string          `json:"stream_id"`
+	Format     ClipboardFormat `json:"format"`
+	// Name is the file's base name, for ClipboardFiles only.
+	Name string `json:"name,omitempty"`
+	Size int64  `json:"size"`
+}
+
+// ClipboardStageResponse answers a stage.
+type ClipboardStageResponse struct {
+	// Refused is empty when the guest is ready for the item; otherwise it
+	// is why not (ClipboardReasonNoSpace), and nothing is to be sent.
+	Refused string `json:"refused,omitempty"`
+	// Free is the free space on the guest's staging disk, in bytes, when it
+	// refused for want of it.
+	Free int64 `json:"free,omitempty"`
+}
+
+// ClipboardCredit acknowledges a download stream's bytes: Acked is how many
+// the host has written so far, in all. The guest may send up to
+// ClipboardWindowBytes beyond it.
+type ClipboardCredit struct {
+	StreamID string `json:"stream_id"`
+	Acked    int64  `json:"acked"`
+}
+
+// ClipboardStaged acknowledges a staged item's bytes as the guest writes them,
+// and at the end (Done) says whether the item is whole.
+type ClipboardStaged struct {
+	StreamID string `json:"stream_id"`
+	// Acked is how many bytes the guest has written, in all.
+	Acked int64 `json:"acked"`
+	// Done ends the stream: the item is staged and verified when Reason is
+	// empty, and dropped for Reason otherwise.
+	Done   bool   `json:"done,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	// Err says more about a Reason, for a log.
+	Err string `json:"err,omitempty"`
+}
+
+// ClipboardCancel abandons a transfer: whatever of it is still in flight
+// stops, and whatever it staged is deleted.
+type ClipboardCancel struct {
+	TransferID string `json:"transfer_id"`
 }

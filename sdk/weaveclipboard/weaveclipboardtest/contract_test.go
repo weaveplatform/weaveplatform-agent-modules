@@ -495,3 +495,90 @@ func TestTheChecksReportWhatTheyCannotRun(t *testing.T) {
 		}
 	}
 }
+
+// disk is a clipboard whose files are on disk, offered and taken by path as
+// the OS backends do: the reference for streaming files. Its other
+// representations are mem's.
+type disk struct {
+	mem
+	fmu   sync.Mutex
+	paths []string
+	lose  bool // write drops the files it was handed
+}
+
+func (d *disk) Read(
+	ctx context.Context,
+	formats []weavewire.ClipboardFormat,
+	maxBytes int64,
+) (weaveclipboard.Contents, error) {
+	c, err := d.mem.Read(ctx, formats, maxBytes)
+	d.fmu.Lock()
+	defer d.fmu.Unlock()
+	if len(formats) == 0 || slices.Contains(formats, weavewire.ClipboardFiles) {
+		c.Files = weaveclipboard.FilesAt(d.paths)
+	}
+	return c, err
+}
+
+func (d *disk) WriteFiles(
+	ctx context.Context,
+	items []weavewire.ClipboardItem,
+	paths []string,
+) (weavewire.ClipboardSetResponse, error) {
+	d.fmu.Lock()
+	d.paths = paths
+	if d.lose {
+		d.paths = nil
+	}
+	d.fmu.Unlock()
+	res, err := d.mem.Write(
+		ctx,
+		slices.DeleteFunc(slices.Clone(items), func(it weavewire.ClipboardItem) bool {
+			return it.Format == weavewire.ClipboardFiles
+		}),
+	)
+	if err == nil && len(paths) > 0 {
+		res.Written = append(res.Written, weavewire.ClipboardFiles)
+	}
+	return res, err
+}
+
+// A file over the older 64 MiB ceiling crosses both ways with a backend that
+// takes files by path; a backend that loses them is caught, and one that holds
+// files in memory is skipped, saying so.
+func TestTheLargeFileCheck(t *testing.T) {
+	t.Run("passes", func(t *testing.T) {
+		checkLargeFiles(t, &disk{}, weavewire.MaxClipboardBytes+(1<<20))
+	})
+	for name, b := range map[string]weaveclipboard.Backend{
+		"loses the files": &disk{lose: true},
+		"in memory":       &mem{},
+	} {
+		r := &recorder{TB: t}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			checkLargeFiles(r, b, 1<<20)
+		}()
+		<-done
+		if name == "in memory" && !r.skipped || name != "in memory" && r.all() == "" {
+			t.Errorf("%s: skipped %v, reported %q", name, r.skipped, r.all())
+		}
+	}
+	t.Setenv(LargeFileEnv, "3")
+	if largeFileBytes(t) != 3<<20 {
+		t.Error("the size from the environment")
+	}
+	t.Setenv(LargeFileEnv, "")
+	if largeFileBytes(t) != defaultLargeMiB<<20 {
+		t.Error("the default size")
+	}
+	t.Setenv(LargeFileEnv, "lots")
+	r := &recorder{TB: t}
+	done := make(chan struct{})
+	go func() { defer close(done); largeFileBytes(r) }()
+	<-done
+	if r.all() == "" {
+		t.Error("a size that is not one")
+	}
+}

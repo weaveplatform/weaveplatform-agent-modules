@@ -100,7 +100,11 @@ func (t *tool) targets(ctx context.Context) ([]string, error) {
 }
 
 func (t *tool) read(ctx context.Context, target string) ([]byte, error) {
-	return t.output(ctx, "--no-newline", "--type", target)
+	data, err := t.output(ctx, "--no-newline", "--type", target)
+	if err == nil && int64(len(data)) > maxRead {
+		return nil, fmt.Errorf("%s: %w", target, errTooLarge)
+	}
+	return data, err
 }
 
 func (t *tool) output(ctx context.Context, args ...string) ([]byte, error) {
