@@ -25,7 +25,7 @@ import (
 // channel gate — reached by the host client over real framing, and only after
 // authentication.
 func TestClipboardThroughTheChannel(t *testing.T) {
-	svc := weaveclipboard.NewService(private(t))
+	svc := weaveclipboard.NewService(private(t), weaveclipboard.WithStagingDir(t.TempDir()))
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
