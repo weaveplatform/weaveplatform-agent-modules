@@ -104,6 +104,13 @@ type Service struct {
 	mu      sync.Mutex
 	uploads map[string]*upload
 	order   []string
+
+	// sizes holds the sizes stat measured for the content at sizesToken, so
+	// a host polling an unchanged clipboard costs no read. Guarded by sizesMu,
+	// apart from mu so a stat never waits behind an upload.
+	sizesMu    sync.Mutex
+	sizes      map[weavewire.ClipboardFormat]int64
+	sizesToken uint64
 }
 
 // NewService builds the clipboard service.
@@ -137,11 +144,54 @@ func (s *Service) handleStat(ctx context.Context, _ []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("weaveclipboard: stat: %w", err)
 	}
+	s.measure(ctx, &st)
 	sup := s.support()
 	st.Support = sup.Formats
 	st.SingleRepresentation = sup.SingleRepresentation
 	st.Limitation = sup.Limitation
 	return weavewire.EncodePayload(st)
+}
+
+// measure fills in the size of every format a backend's stat left at zero,
+// by reading it once per change of the token.
+//
+// A backend leaves a size out when its OS cannot tell without reading the
+// data (every format but files, on every OS today). A host auditing a copy it
+// will not read (a guest-to-host direction it blocks) has only stat to go on,
+// and without this would record the copy as zero bytes. The read is the one a
+// get makes, so a size is what a get would carry; it is made once per change,
+// never on every poll, and a read that fails leaves the sizes unknown rather
+// than failing the stat.
+func (s *Service) measure(ctx context.Context, st *weavewire.ClipboardStatResponse) {
+	var unknown []weavewire.ClipboardFormat
+	for _, f := range st.Formats {
+		if f.Size == 0 && f.Format != weavewire.ClipboardFiles {
+			unknown = append(unknown, f.Format)
+		}
+	}
+	if len(unknown) == 0 {
+		return
+	}
+	s.sizesMu.Lock()
+	defer s.sizesMu.Unlock()
+	if s.sizes == nil || s.sizesToken != st.ChangeToken {
+		c, err := s.b.Read(ctx, unknown, weavewire.MaxClipboardBytes)
+		if err != nil || c.ChangeToken != st.ChangeToken {
+			return // unreadable, or changed since the stat: the next poll measures
+		}
+		s.sizes, s.sizesToken = make(map[weavewire.ClipboardFormat]int64), c.ChangeToken
+		for _, it := range c.Items {
+			if it.Data != nil {
+				it.Size = int64(len(it.Data))
+			}
+			s.sizes[it.Format] += it.Size
+		}
+	}
+	for i, f := range st.Formats {
+		if f.Size == 0 && f.Format != weavewire.ClipboardFiles {
+			st.Formats[i].Size = s.sizes[f.Format]
+		}
+	}
 }
 
 // handleGet reads the clipboard and replies with its content: inline when it

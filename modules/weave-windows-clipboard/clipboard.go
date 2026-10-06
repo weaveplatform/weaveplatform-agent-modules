@@ -111,19 +111,45 @@ func (c *clipboard) formatID(f weavewire.ClipboardFormat) uint32 {
 	return id
 }
 
-// available lists the weave formats on the open clipboard, richest first.
-func (c *clipboard) available() []weavewire.ClipboardFormat {
+// offer is what the open clipboard holds: the weave formats, richest first,
+// and the bitmap formats in the order the clipboard lists them.
+type offer struct {
+	formats []weavewire.ClipboardFormat
+	// bitmaps are CF_DIBV5 and CF_DIB as they are listed: an application's
+	// own formats come before those Windows synthesizes from them, so the
+	// first is the one the application wrote.
+	bitmaps []uint32
+	png     bool // PNG itself, under its registered name
+}
+
+// available reads what the open clipboard holds. A bitmap with no PNG
+// beside it, as Paint copies, is offered as PNG: converted when it is read.
+// CF_BITMAP alone counts, since Windows synthesizes CF_DIB from it for any
+// reader.
+func (c *clipboard) available() offer {
+	var o offer
 	held := make(map[uint32]bool)
 	for f := c.w.enum(0); f != 0; f = c.w.enum(f) {
 		held[f] = true
-	}
-	var out []weavewire.ClipboardFormat
-	for _, f := range weavewire.ClipboardFormats() {
-		if id := c.formatID(f); id != 0 && held[id] {
-			out = append(out, f)
+		if f == cfDIBV5 || f == cfDIB {
+			o.bitmaps = append(o.bitmaps, f)
 		}
 	}
-	return out
+	if held[cfBitmap] && !held[cfDIB] {
+		o.bitmaps = append(o.bitmaps, cfDIB)
+	}
+	for _, f := range weavewire.ClipboardFormats() {
+		id := c.formatID(f)
+		has := id != 0 && held[id]
+		if f == weavewire.ClipboardPNG {
+			o.png = has
+			has = has || len(o.bitmaps) > 0
+		}
+		if has {
+			o.formats = append(o.formats, f)
+		}
+	}
+	return o
 }
 
 // files lists the paths in the open clipboard's CF_HDROP.
@@ -163,12 +189,14 @@ func (c *clipboard) withOpen(fn func() error) error {
 //
 // Sizes are left out except for files, whose sizes the filesystem knows: an
 // application may hold its data unrendered until asked, and asking for it
-// would make the application render it.
+// would make the application render it. weaveclipboard's service sizes the
+// rest by reading them, once per change of the sequence number rather than on
+// every poll.
 func (c *clipboard) Stat(context.Context) (weavewire.ClipboardStatResponse, error) {
 	var resp weavewire.ClipboardStatResponse
 	err := c.withOpen(func() error {
 		resp.ChangeToken = uint64(c.w.sequence())
-		for _, f := range c.available() {
+		for _, f := range c.available().formats {
 			info := weavewire.ClipboardFormatInfo{Format: f}
 			if f == weavewire.ClipboardFiles {
 				for _, p := range c.files() {
@@ -199,12 +227,21 @@ func (c *clipboard) Read(
 	var out weaveclipboard.Contents
 	err := c.withOpen(func() error {
 		out.ChangeToken = uint64(c.w.sequence())
-		for _, f := range c.available() {
+		o := c.available()
+		for _, f := range o.formats {
 			if len(formats) > 0 && !slices.Contains(formats, f) {
 				continue
 			}
 			if f == weavewire.ClipboardFiles {
 				out.Items = append(out.Items, readFiles(c.files(), maxBytes)...)
+				continue
+			}
+			if f == weavewire.ClipboardPNG && !o.png {
+				if data := c.bitmapPNG(o.bitmaps); data != nil {
+					out.Items = append(out.Items, weavewire.ClipboardItem{
+						Format: f, Size: int64(len(data)), Data: data,
+					})
+				}
 				continue
 			}
 			h, err := c.w.get(c.formatID(f))
@@ -260,6 +297,9 @@ func (c *clipboard) Write(
 				return err
 			}
 			resp.Written = append(resp.Written, it.Format)
+			if it.Format == weavewire.ClipboardPNG {
+				c.writeBitmaps(it.Data)
+			}
 		}
 		return nil
 	})
@@ -270,6 +310,40 @@ func (c *clipboard) Write(
 	// clipboard is released.
 	c.run(func() { resp.ChangeToken = uint64(c.w.sequence()) })
 	return resp, nil
+}
+
+// bitmapPNG converts the first bitmap on the open clipboard that converts to
+// PNG, nil when none does.
+func (c *clipboard) bitmapPNG(formats []uint32) []byte {
+	for _, f := range formats {
+		h, err := c.w.get(f)
+		if err != nil {
+			continue
+		}
+		raw, ok := readBlock(h)
+		if !ok {
+			continue
+		}
+		if data, err := dibToPNG(raw); err == nil {
+			return data
+		}
+	}
+	return nil
+}
+
+// writeBitmaps puts a PNG on the open clipboard as CF_DIBV5 and CF_DIB as
+// well, so applications that paste only a bitmap, Paint among them, paste
+// it. They are extra renderings of the PNG already written: one that cannot
+// be made (a PNG that does not decode, or is too large) or written leaves
+// the PNG on the clipboard as it is, rather than failing a set that wrote
+// what it was asked to.
+func (c *clipboard) writeBitmaps(data []byte) {
+	dib, dibv5, err := pngToDIBs(data)
+	if err != nil {
+		return
+	}
+	_ = c.w.writeFormat(cfDIBV5, dibv5)
+	_ = c.w.writeFormat(cfDIB, dib)
 }
 
 // decode turns a clipboard block into the weave format's bytes.

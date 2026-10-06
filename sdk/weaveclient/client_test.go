@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,9 @@ type rawGuest struct {
 	conn net.Conn
 	r    *bufio.Reader
 	w    *bufio.Writer
+	// wmu serialises writes from the test and from a goroutine answering
+	// for the guest alongside it.
+	wmu sync.Mutex
 }
 
 func newRaw(t *testing.T) (*rawGuest, *weaveclient.Client) {
@@ -68,6 +72,8 @@ func (g *rawGuest) read() hvchannel.Envelope {
 
 func (g *rawGuest) write(env hvchannel.Envelope) {
 	g.t.Helper()
+	g.wmu.Lock()
+	defer g.wmu.Unlock()
 	if err := hvchannel.WriteEnvelope(g.w, env); err != nil {
 		g.t.Errorf("guest write: %v", err)
 		return

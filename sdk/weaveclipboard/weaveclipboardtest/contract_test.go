@@ -42,7 +42,9 @@ type mem struct {
 	dropFiles   bool                      // read back no files
 	skipFiles   bool                      // write leaves the files out
 	writeErr    error
-	emptyOnFail bool // a refused write still empties the clipboard
+	emptyOnFail bool  // a refused write still empties the clipboard
+	wholeFiles  bool  // one file over the cap leaves every file unread
+	statSize    int64 // stat sizes every other format at this
 }
 
 var errNoClipboard = errors.New("no clipboard here")
@@ -84,7 +86,8 @@ func (m *mem) Stat(context.Context) (weavewire.ClipboardStatResponse, error) {
 			files.Count++
 			files.Size += int64(len(it.Data))
 		default:
-			st.Formats = append(st.Formats, weavewire.ClipboardFormatInfo{Format: it.Format})
+			st.Formats = append(st.Formats,
+				weavewire.ClipboardFormatInfo{Format: it.Format, Size: m.statSize})
 		}
 	}
 	if m.statFiles != nil {
@@ -99,7 +102,7 @@ func (m *mem) Stat(context.Context) (weavewire.ClipboardStatResponse, error) {
 func (m *mem) Read(
 	_ context.Context,
 	formats []weavewire.ClipboardFormat,
-	_ int64,
+	maxBytes int64,
 ) (weaveclipboard.Contents, error) {
 	if err := m.unavailableErr(weavewire.KindClipboardGet); err != nil {
 		return weaveclipboard.Contents{}, err
@@ -129,6 +132,15 @@ func (m *mem) Read(
 	}
 	if m.reorder {
 		slices.Reverse(files)
+	}
+	if m.wholeFiles && slices.ContainsFunc(files, func(it weavewire.ClipboardItem) bool {
+		return int64(len(it.Data)) > maxBytes
+	}) {
+		for i := range files {
+			files[i] = weavewire.ClipboardItem{
+				Format: files[i].Format, Name: files[i].Name, Size: int64(len(files[i].Data)),
+			}
+		}
 	}
 	if !m.dropFiles {
 		c.Items = append(c.Items, files...)
@@ -406,6 +418,12 @@ func TestTheChecksCatchBrokenBackends(t *testing.T) {
 			"text/rtf read back",
 		},
 		{"every: files", checkEveryRepresentation, &mem{dropFiles: true}, "read 0 files"},
+		{
+			"every: stat sizes",
+			checkEveryRepresentation,
+			&mem{statSize: 1},
+			"stat sizes text/plain at 1 bytes",
+		},
 
 		{
 			"get: corrupt",
@@ -424,6 +442,10 @@ func TestTheChecksCatchBrokenBackends(t *testing.T) {
 			&mem{emptyOnFail: true},
 			"a refused set moved the token",
 		},
+
+		{"over cap: whole set", checkFilesOverCap, &mem{wholeFiles: true}, "read 0 files"},
+		{"over cap: order", checkFilesOverCap, &mem{reorder: true}, "file 0 read back"},
+		{"over cap: not written", checkFilesOverCap, &mem{skipFiles: true}, "want files"},
 
 		{"large: corrupt", checkLarge, &mem{corrupt: weavewire.ClipboardPNG}, "read back streamed"},
 		{"large: not written", checkLarge, &mem{writeExtra: true}, "want image/png"},
@@ -467,7 +489,9 @@ func TestTheChecksReportWhatTheyCannotRun(t *testing.T) {
 			s.Formats[i] = weavewire.ClipboardFormatSupport{Format: f.Format, Reason: "r"}
 		}
 	}
-	if r := record(t, checkFiles, &mem{support: &s}); !r.skipped {
-		t.Error("the files check ran without files")
+	for _, check := range []func(testing.TB, *harness){checkFiles, checkFilesOverCap} {
+		if r := record(t, check, &mem{support: &s}); !r.skipped {
+			t.Error("a files check ran without files")
+		}
 	}
 }

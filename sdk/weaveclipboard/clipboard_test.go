@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -28,6 +29,10 @@ type memClipboard struct {
 	err      error
 	skipOver bool // leave representations over maxBytes unread, as a backend may
 	asked    []weavewire.ClipboardFormat
+	sizeless bool   // stat leaves sizes out, as the OS backends do
+	reads    int    // Read calls
+	readErr  error  // Read alone fails
+	readOff  uint64 // Read reports the token plus this
 }
 
 func (m *memClipboard) Stat(context.Context) (weavewire.ClipboardStatResponse, error) {
@@ -38,10 +43,11 @@ func (m *memClipboard) Stat(context.Context) (weavewire.ClipboardStatResponse, e
 	}
 	st := weavewire.ClipboardStatResponse{ChangeToken: m.token}
 	for _, it := range m.items {
-		st.Formats = append(
-			st.Formats,
-			weavewire.ClipboardFormatInfo{Format: it.Format, Size: int64(len(it.Data))},
-		)
+		info := weavewire.ClipboardFormatInfo{Format: it.Format, Size: int64(len(it.Data))}
+		if m.sizeless && it.Format != weavewire.ClipboardFiles {
+			info.Size = 0
+		}
+		st.Formats = append(st.Formats, info)
 	}
 	return st, nil
 }
@@ -54,10 +60,14 @@ func (m *memClipboard) Read(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.asked = formats
+	m.reads++
 	if m.err != nil {
 		return weaveclipboard.Contents{}, m.err
 	}
-	c := weaveclipboard.Contents{ChangeToken: m.token}
+	if m.readErr != nil {
+		return weaveclipboard.Contents{}, m.readErr
+	}
+	c := weaveclipboard.Contents{ChangeToken: m.token + m.readOff}
 	for _, it := range m.items {
 		if m.skipOver && int64(len(it.Data)) > maxBytes {
 			it = weavewire.ClipboardItem{
@@ -112,6 +122,67 @@ func TestStatReportsTheTokenAndFormats(t *testing.T) {
 	start(t, b).Decode(weavewire.KindClipboardStat, nil, &st)
 	if st.ChangeToken != 7 || len(st.Formats) != 1 || st.Formats[0].Size != 2 {
 		t.Fatalf("stat = %+v", st)
+	}
+}
+
+// A backend that cannot size a format without reading it leaves the size out;
+// stat reads it, once per change, so a host auditing a copy it never reads
+// still records its real size.
+func TestStatMeasuresWhatTheBackendCannotSize(t *testing.T) {
+	b := &memClipboard{token: 4, sizeless: true, items: []weavewire.ClipboardItem{
+		text("hello"),
+		{Format: weavewire.ClipboardPNG, Data: bytes.Repeat([]byte{1}, 300)},
+		{Format: weavewire.ClipboardFiles, Name: "a", Data: []byte("abc")},
+	}}
+	h := start(t, b)
+	sizes := func() map[weavewire.ClipboardFormat]int64 {
+		var st weavewire.ClipboardStatResponse
+		h.Decode(weavewire.KindClipboardStat, nil, &st)
+		out := make(map[weavewire.ClipboardFormat]int64)
+		for _, f := range st.Formats {
+			out[f.Format] = f.Size
+		}
+		return out
+	}
+	want := map[weavewire.ClipboardFormat]int64{
+		weavewire.ClipboardText: 5, weavewire.ClipboardPNG: 300, weavewire.ClipboardFiles: 3,
+	}
+	for range 3 {
+		if got := sizes(); !maps.Equal(got, want) {
+			t.Fatalf("sizes %v, want %v", got, want)
+		}
+	}
+	if b.reads != 1 {
+		t.Errorf("three stats of one clipboard read it %d times, want once", b.reads)
+	}
+	if !slices.Equal(
+		b.asked,
+		[]weavewire.ClipboardFormat{weavewire.ClipboardText, weavewire.ClipboardPNG},
+	) {
+		t.Errorf("measured %v: files are sized by the backend, never read for a stat", b.asked)
+	}
+
+	// A change is measured afresh.
+	b.mu.Lock()
+	b.token, b.items = 5, []weavewire.ClipboardItem{text("hi")}
+	b.mu.Unlock()
+	if got := sizes(); got[weavewire.ClipboardText] != 2 || b.reads != 2 {
+		t.Errorf("after a change: sizes %v after %d reads", got, b.reads)
+	}
+
+	// A read that fails, or reads content that changed since the stat,
+	// leaves the size unknown and the stat answered.
+	b.mu.Lock()
+	b.token, b.readErr = 6, errors.New("owner gone")
+	b.mu.Unlock()
+	if got := sizes(); got[weavewire.ClipboardText] != 0 {
+		t.Errorf("an unreadable clipboard sized %v", got)
+	}
+	b.mu.Lock()
+	b.readErr, b.readOff = nil, 1
+	b.mu.Unlock()
+	if got := sizes(); got[weavewire.ClipboardText] != 0 {
+		t.Errorf("a clipboard that changed under the stat sized %v", got)
 	}
 }
 

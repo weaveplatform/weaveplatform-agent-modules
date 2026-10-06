@@ -8,7 +8,7 @@ or Windows guest with one engine and one policy.
 
 | Op | What it does |
 |---|---|
-| `weave.clipboard.stat` | The change token, the formats on the clipboard now, and what the guest can hold (`support`) |
+| `weave.clipboard.stat` | The change token, the formats on the clipboard now with their sizes, and what the guest can hold (`support`) |
 | `weave.clipboard.get` | The representations asked for (`formats`), each up to `max_bytes`; one over the cap is listed in `omitted` with its size, never truncated |
 | `weave.clipboard.set` | Replaces the clipboard with every representation sent, as one entry; lists what it wrote (`written`) and what it did not (`unwritten`) |
 
@@ -23,12 +23,21 @@ One list, in `weavewire.ClipboardFormats`, richest first:
 | Format | macOS (UTI) | Linux (targets offered) | Windows (clipboard format) |
 |---|---|---|---|
 | `files` | `public.file-url`, one pasteboard item per file | `text/uri-list`, `x-special/gnome-copied-files` | `CF_HDROP` |
-| `image/png` | `public.png` | `image/png` | `PNG` (registered) |
+| `image/png` | `public.png` | `image/png` | `PNG` (registered); also written as `CF_DIBV5` and `CF_DIB`, and read from them when no `PNG` is there |
 | `image/tiff` | `public.tiff` | `image/tiff` | `CF_TIFF` |
 | `application/pdf` | `com.adobe.pdf` | `application/pdf` | `Portable Document Format` (registered); reported `private`, since Windows has no PDF format applications share |
 | `text/rtf` | `public.rtf` | `text/rtf`, `application/rtf` | `Rich Text Format` (registered) |
 | `text/html` | `public.html` | `text/html` | `HTML Format` (registered; the CF_HTML header is added on set and removed on get) |
 | `text/plain` | `public.utf8-plain-text` | `text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain` | `CF_UNICODETEXT` (UTF-16; UTF-8 on the wire) |
+
+Windows applications that copy an image as a bitmap alone (Paint, and most older ones)
+copy `CF_DIB`, `CF_DIBV5` or `CF_BITMAP` and no PNG. The Windows module offers such a
+clipboard as `image/png` and converts the bitmap when it is read: 1, 4, 8, 16, 24 and 32
+bits per pixel, `BI_RGB`, `BI_BITFIELDS` and `BI_ALPHABITFIELDS`, rows in either order, and
+the PNG inside a `BI_PNG` bitmap as it is. A 32-bit bitmap keeps its alpha unless every
+pixel's is zero, which is padding, not transparency. A set's PNG is also written as a
+`CF_DIBV5` with its alpha and a 24-bit `CF_DIB` composited over white, so those
+applications paste it; reading back returns the PNG as it was sent.
 
 Files cross as their content: the guest stages received files and puts their paths on its
 clipboard, so a paste copies real files, and a get reads the files the clipboard names.
@@ -38,6 +47,11 @@ above, with whether the guest holds it, its native name, or why not. A set leave
 the guest cannot hold and lists it in `unwritten`; a set of nothing the guest can hold is
 answered `unsupported` and leaves the clipboard as it was. A format outside the list is
 never written and always listed in `unwritten`.
+
+A stat's sizes are what a get with no cap would carry, so a host can audit a copy it does
+not read (a direction its policy blocks) at its real size. Files are sized from the
+filesystem; every other format is read once per change of the token to size it, never on
+every poll.
 
 ## The change token
 
@@ -96,9 +110,10 @@ test's own, never the clipboard of the machine running the tests:
 
 It checks that the token changes on every set and that stat and get report it; that
 stat lists the formats present and the guest's support; that a get honours `formats` and
-`max_bytes`; that a set of every canonical format reads back byte for byte; files (staged,
-named by base name, size-capped and reported when omitted, a bad name refused without
-touching the clipboard); content large enough to stream both ways; and the error answers,
+`max_bytes`; that stat sizes every format it lists; that a set of every canonical format reads back
+byte for byte; files (staged, named by base name, size-capped and reported when omitted, a
+bad name refused without touching the clipboard); a copy of files some of which are over
+the cap, which leaves out only those, wherever they are in the copy, and brings the rest; content large enough to stream both ways; and the error answers,
 `unsupported` included.
 
 `make test-linux-clipboard` runs the Linux module's tests in Docker, as an ordinary user,

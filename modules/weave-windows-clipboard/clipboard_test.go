@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +18,8 @@ import (
 
 	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/foundation"
 
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveclipboard"
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavemodule/weavemoduletest"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
 
@@ -419,5 +424,158 @@ func TestReadsAPDFAnotherApplicationCopied(t *testing.T) {
 	); f.regs["Portable Document Format"] != id ||
 		id == 0 {
 		t.Errorf("PDF registered as %d, %v", id, f.regs)
+	}
+}
+
+// paintCopy is what Paint puts on the clipboard for a copy: a 24-bit CF_DIB,
+// three pixels wide so its rows are padded, and the CF_BITMAP it came from,
+// with no PNG.
+func paintCopy() []byte {
+	return dibFixture{
+		header: 40, width: 3, height: 2, bitCount: 24,
+		rows: [][]byte{{0, 0, 255, 0, 255, 0, 255, 0, 0}, {255, 255, 255, 0, 0, 0, 0, 0, 255}},
+	}.build()
+}
+
+// A bitmap with no PNG beside it, as Paint copies, is offered and read as
+// PNG, and a host that never reads it still learns its size from stat.
+func TestABitmapOnlyCopyIsPNG(t *testing.T) {
+	c, f := backend(t)
+	f.put(t, cfBitmap, []byte("an HBITMAP"))
+	f.put(t, cfDIB, paintCopy())
+
+	st, err := c.Stat(context.Background())
+	if err != nil ||
+		!slices.Equal(
+			st.Formats,
+			[]weavewire.ClipboardFormatInfo{{Format: weavewire.ClipboardPNG}},
+		) {
+		t.Fatalf("stat %+v, %v; want PNG", st, err)
+	}
+	got, err := c.Read(
+		context.Background(),
+		[]weavewire.ClipboardFormat{weavewire.ClipboardPNG},
+		1<<20,
+	)
+	if err != nil || len(got.Items) != 1 {
+		t.Fatalf("read %+v, %v", got.Items, err)
+	}
+	samePixels(t, "Paint copy", pixels(t, got.Items[0].Data), [][]color.NRGBA{
+		{rgb(255, 0, 0), rgb(0, 255, 0), rgb(0, 0, 255)},
+		{rgb(255, 255, 255), rgb(0, 0, 0), rgb(255, 0, 0)},
+	})
+
+	h := weavemoduletest.Start(t, weaveclipboard.NewService(c))
+	var sized weavewire.ClipboardStatResponse
+	h.Decode(weavewire.KindClipboardStat, nil, &sized)
+	if len(sized.Formats) != 1 || sized.Formats[0].Size != int64(len(got.Items[0].Data)) {
+		t.Errorf(
+			"stat through the service %+v, want PNG at %d bytes",
+			sized.Formats,
+			len(got.Items[0].Data),
+		)
+	}
+}
+
+// The bitmap an application wrote is listed before the ones Windows
+// synthesizes from it, and is the one read; one that does not convert gives
+// way to the next.
+func TestTheBitmapReadIsTheFirstThatConverts(t *testing.T) {
+	alpha := dibFixture{
+		header: v5HeaderSize, width: 1, height: 1, bitCount: 32, compression: biBitfields,
+		masks: []uint32{0xff0000, 0xff00, 0xff, 0xff000000}, rows: [][]byte{{30, 20, 10, 128}},
+	}.build()
+	c, f := backend(t)
+	f.put(t, cfDIB, []byte("not a bitmap"))
+	f.put(t, cfDIBV5, alpha)
+	got, err := c.Read(context.Background(), nil, 1<<20)
+	if err != nil || len(got.Items) != 1 {
+		t.Fatalf("read %+v, %v", got.Items, err)
+	}
+	samePixels(
+		t,
+		"CF_DIBV5",
+		pixels(t, got.Items[0].Data),
+		[][]color.NRGBA{{rgba(10, 20, 30, 128)}},
+	)
+
+	// One that cannot be fetched, or read, is passed over too; with none
+	// left, there is no image.
+	f.failGet = cfDIBV5
+	_, _ = foundation.GlobalFree(foundation.HGLOBAL(f.blocks[cfDIB]))
+	f.blocks[cfDIB] = 0 // a block GlobalSize cannot size
+	if got, err := c.Read(context.Background(), nil, 1<<20); err != nil || len(got.Items) != 0 {
+		t.Errorf("read %+v, %v; want nothing", got.Items, err)
+	}
+
+	// CF_BITMAP alone is offered: Windows synthesizes CF_DIB from it for any
+	// reader. The stand-in does not, so there is nothing to read here.
+	c, f = backend(t)
+	f.put(t, cfBitmap, []byte("an HBITMAP"))
+	if o := c.availableOpen(t, f); o.png || !slices.Equal(o.bitmaps, []uint32{cfDIB}) ||
+		!slices.Equal(o.formats, []weavewire.ClipboardFormat{weavewire.ClipboardPNG}) {
+		t.Errorf("CF_BITMAP alone offers %+v, want CF_DIB to be asked for", o)
+	}
+}
+
+// availableOpen is available with the stand-in clipboard open.
+func (c *clipboard) availableOpen(t *testing.T, f *fakeWin) offer {
+	t.Helper()
+	f.open = true
+	defer func() { f.open = false }()
+	return c.available()
+}
+
+// A PNG from the host is written as PNG and as CF_DIBV5 and CF_DIB, which
+// Paint pastes; the PNG is what reads back.
+func TestAPNGIsWrittenAsBitmapsToo(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 3, 1))
+	img.SetNRGBA(0, 0, rgba(255, 0, 0, 255))
+	img.SetNRGBA(1, 0, rgba(0, 255, 0, 128))
+	img.SetNRGBA(2, 0, rgba(0, 0, 255, 0))
+	data := encodePNG(t, img)
+
+	c, f := backend(t)
+	res, err := c.Write(
+		context.Background(),
+		[]weavewire.ClipboardItem{{Format: weavewire.ClipboardPNG, Data: data}},
+	)
+	if err != nil ||
+		!slices.Equal(res.Written, []weavewire.ClipboardFormat{weavewire.ClipboardPNG}) {
+		t.Fatalf("write %+v, %v", res, err)
+	}
+	v5, err := dibToPNG(f.held(t, cfDIBV5))
+	if err != nil {
+		t.Fatalf("CF_DIBV5: %v", err)
+	}
+	samePixels(t, "CF_DIBV5", pixels(t, v5), [][]color.NRGBA{
+		{rgb(255, 0, 0), rgba(0, 255, 0, 128), rgba(0, 0, 255, 0)},
+	})
+	flat, err := dibToPNG(f.held(t, cfDIB))
+	if err != nil {
+		t.Fatalf("CF_DIB: %v", err)
+	}
+	samePixels(t, "CF_DIB", pixels(t, flat), [][]color.NRGBA{
+		{rgb(255, 0, 0), rgb(127, 255, 127), rgb(255, 255, 255)},
+	})
+	got, err := c.Read(context.Background(), nil, 1<<20)
+	if err != nil || len(got.Items) != 1 || !bytes.Equal(got.Items[0].Data, data) {
+		t.Errorf("read back %+v, %v; want the PNG as sent", got.Items, err)
+	}
+
+	// No bitmap from bytes that are no PNG, and a bitmap the clipboard
+	// refuses fails nothing: the PNG is on it either way.
+	c, f = backend(t)
+	if _, err := c.Write(context.Background(), []weavewire.ClipboardItem{
+		{Format: weavewire.ClipboardPNG, Data: []byte("\x89PNG, not really")},
+	}); err != nil || f.held(t, cfDIB) != nil || f.held(t, cfDIBV5) != nil {
+		t.Errorf("an undecodable PNG: %v, CF_DIB %v", err, f.held(t, cfDIB) != nil)
+	}
+	c, f = backend(t)
+	f.failSet = cfDIBV5
+	if res, err := c.Write(context.Background(), []weavewire.ClipboardItem{
+		{Format: weavewire.ClipboardPNG, Data: data},
+	}); err != nil || len(res.Written) != 1 || f.held(t, cfDIB) == nil {
+		t.Errorf("a refused CF_DIBV5: %+v, %v", res, err)
 	}
 }

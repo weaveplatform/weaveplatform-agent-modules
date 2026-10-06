@@ -117,6 +117,7 @@ func RunContract(t *testing.T, c Contract) {
 		{"EveryRepresentation", checkEveryRepresentation},
 		{"GetHonoursFormatsAndMaxBytes", checkGet},
 		{"Files", checkFiles},
+		{"FilesOverTheCapLeaveTheRest", checkFilesOverCap},
 		{"LargeContentStreams", checkLarge},
 		{"Errors", checkErrors},
 	}
@@ -391,6 +392,11 @@ func checkEveryRepresentation(t testing.TB, h *harness) {
 		if f == weavewire.ClipboardFiles && (st.Formats[i].Count != 2 || st.Formats[i].Size != 19) {
 			t.Errorf("stat reports files as %+v, want 2 files of 19 bytes", st.Formats[i])
 		}
+		// A host auditing a copy it does not read has only these sizes.
+		n := int64(len(sample(f).Data))
+		if f != weavewire.ClipboardFiles && st.Formats[i].Size != n {
+			t.Errorf("stat sizes %s at %d bytes, want %d", f, st.Formats[i].Size, n)
+		}
 	}
 
 	got := h.get(t, weavewire.ClipboardGetRequest{Formats: want})
@@ -526,6 +532,72 @@ func checkFiles(t testing.TB, h *harness) {
 	}
 }
 
+// A copy of files of which some are over the cap crosses without them: each
+// over-cap file is listed as omitted with its size, and every other file
+// crosses, whichever order they were copied in. The sizes are a host's: a cap
+// above the inline limit, files over it on either side of a 16-byte one, and
+// enough under it that the rest streams.
+func checkFilesOverCap(t testing.TB, h *harness) {
+	if !slices.Contains(h.held(t), weavewire.ClipboardFiles) {
+		t.Skip("this guest does not hold files")
+	}
+	const limit = weavewire.ClipboardInlineBytes + 64<<10
+	file := func(name string, n int, b byte) weavewire.ClipboardItem {
+		return weavewire.ClipboardItem{
+			Format: weavewire.ClipboardFiles, Name: name, Data: bytes.Repeat([]byte{b}, n),
+		}
+	}
+	over := file("over.iso", limit+1, 'o')
+	small := file("small.txt", 16, 's')
+	mid := file("mid.bin", 200<<10, 'm')
+	last := file("last.bin", 2*limit, 'l')
+	all := []weavewire.ClipboardItem{over, small, mid, file("mid2.bin", 200<<10, 'n'), last}
+
+	// The set has no cap: a host sends what its own policy let through, and
+	// every file it sends is staged.
+	if res := h.mustSet(t, all); !slices.Contains(res.Written, weavewire.ClipboardFiles) {
+		t.Fatalf("written %v, want files", res.Written)
+	}
+	for _, req := range []weavewire.ClipboardGetRequest{
+		{Formats: []weavewire.ClipboardFormat{weavewire.ClipboardFiles}, MaxBytes: limit},
+		{Formats: weavewire.ClipboardFormats(), MaxBytes: limit}, // as a host asks
+	} {
+		got := h.get(t, req)
+		var files []weavewire.ClipboardItem
+		for _, it := range got.Items {
+			if it.Format == weavewire.ClipboardFiles {
+				files = append(files, it)
+			}
+		}
+		checkFileItems(t, files, all[1:4])
+		if !got.Streamed {
+			t.Errorf("%d bytes of files came back inline", len(dataOf(files)))
+		}
+		var omitted []string
+		for _, it := range got.Omitted {
+			if it.Format != weavewire.ClipboardFiles || it.Data != nil {
+				t.Errorf("omitted %s %q carries data or the wrong format", it.Format, it.Name)
+			}
+			omitted = append(omitted, fmt.Sprintf("%s:%d", it.Name, it.Size))
+		}
+		if want := []string{
+			fmt.Sprintf("over.iso:%d", len(over.Data)), fmt.Sprintf("last.bin:%d", len(last.Data)),
+		}; !slices.Equal(omitted, want) {
+			t.Errorf("omitted %v, want %v", omitted, want)
+		}
+	}
+
+	// One file over the cap, alone with a small one, as a desktop copy.
+	h.mustSet(t, all[:2])
+	got := h.get(t, weavewire.ClipboardGetRequest{
+		Formats: weavewire.ClipboardFormats(), MaxBytes: limit,
+	})
+	checkFileItems(t, got.Items, all[1:2])
+	if len(got.Omitted) != 1 || got.Omitted[0].Name != "over.iso" {
+		t.Errorf("omitted %+v, want over.iso alone", got.Omitted)
+	}
+}
+
 // checkFileItems compares files read back with the files sent: base names,
 // contents and order.
 func checkFileItems(t testing.TB, got, sent []weavewire.ClipboardItem) {
@@ -533,13 +605,13 @@ func checkFileItems(t testing.TB, got, sent []weavewire.ClipboardItem) {
 	if len(got) != len(sent) {
 		t.Fatalf("read %d files (%v), want %d", len(got), namesOf(got), len(sent))
 	}
-	for i, it := range got {
-		name := sent[i].Name
-		name = name[strings.LastIndexAny(name, `/\`)+1:]
+	for i, want := range sent {
+		it := got[i]
+		name := want.Name[strings.LastIndexAny(want.Name, `/\`)+1:]
 		if it.Format != weavewire.ClipboardFiles || it.Name != name ||
-			!bytes.Equal(it.Data, sent[i].Data) {
+			!bytes.Equal(it.Data, want.Data) {
 			t.Errorf("file %d read back as %s %q (%d bytes), want %s (%d bytes)",
-				i, it.Format, it.Name, len(it.Data), name, len(sent[i].Data))
+				i, it.Format, it.Name, len(it.Data), name, len(want.Data))
 		}
 	}
 }
