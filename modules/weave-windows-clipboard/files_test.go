@@ -24,18 +24,6 @@ func TestFileName(t *testing.T) {
 	}
 }
 
-func TestReadFilesSkipsWhatItCannotRead(t *testing.T) {
-	dir := t.TempDir()
-	ok := filepath.Join(dir, "ok")
-	if err := os.WriteFile(ok, []byte("1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got := readFiles([]string{ok, dir, filepath.Join(dir, "gone")}, 10)
-	if len(got) != 1 || got[0].Name != "ok" || string(got[0].Data) != "1" {
-		t.Errorf("read %+v, want ok alone", got)
-	}
-}
-
 func TestStagerReportsAStagingFailure(t *testing.T) {
 	item := []weavewire.ClipboardItem{
 		{Format: weavewire.ClipboardFiles, Name: "a", Data: []byte("x")},
@@ -112,16 +100,5 @@ func TestStagerReportsEachFilesystemFailure(t *testing.T) {
 				t.Errorf("staged with %s failing: %v", name, err)
 			}
 		})
-	}
-}
-
-func TestReadFilesSkipsAFileItCannotRead(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "f")
-	if err := os.WriteFile(p, []byte("1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	swap(t, &readFile, func(string) ([]byte, error) { return nil, errInjected })
-	if got := readFiles([]string{p}, 10); len(got) != 0 {
-		t.Errorf("read %+v from a failing read", got)
 	}
 }

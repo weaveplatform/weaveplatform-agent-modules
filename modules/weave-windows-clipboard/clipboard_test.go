@@ -119,11 +119,14 @@ func TestFilesRoundTripThroughCFHDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Items) != 2 || got.Items[0].Name != "a.txt" ||
-		string(got.Items[0].Data) != "first" ||
-		got.Items[1].Data != nil ||
-		got.Items[1].Size != 14 {
-		t.Errorf("read %+v: want the first file and the second sized but over the cap", got.Items)
+	if len(got.Items) != 0 || len(got.Files) != 2 || got.Files[0].Name != "a.txt" ||
+		got.Files[0].Size != 5 || got.Files[1].Name != "a.txt" || got.Files[1].Size != 14 {
+		t.Fatalf("read %+v: want both files offered by path, sized and unread", got)
+	}
+	for i, want := range []string{"first", "second, larger"} {
+		if data, err := os.ReadFile(got.Files[i].Path); err != nil || string(data) != want {
+			t.Errorf("file %d holds %q, %v; want %q", i, data, err, want)
+		}
 	}
 
 	// Files gone from disk are nothing to copy.

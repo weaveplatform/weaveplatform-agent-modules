@@ -22,7 +22,6 @@ var (
 	removeAll = os.RemoveAll
 	mkdir     = os.Mkdir
 	writeFile = os.WriteFile
-	readFile  = os.ReadFile
 )
 
 // stager holds the files a host sends, so the clipboard can offer them by
@@ -92,34 +91,6 @@ func fileName(name string) (string, error) {
 		return "", fmt.Errorf("%w: %q", errBadName, name)
 	}
 	return base, nil
-}
-
-// readFiles reads each copied file's content: the paths mean nothing on the
-// host, so the content is what crosses. A directory or unreadable path is
-// skipped, and a file over maxBytes is returned with its size and no data so
-// the service lists it as omitted rather than truncating it.
-func readFiles(paths []string, maxBytes int64) []weavewire.ClipboardItem {
-	var out []weavewire.ClipboardItem
-	for _, p := range paths {
-		fi, err := os.Stat(p)
-		if err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		it := weavewire.ClipboardItem{
-			Format: weavewire.ClipboardFiles,
-			Name:   filepath.Base(p),
-			Size:   fi.Size(),
-		}
-		if fi.Size() <= maxBytes {
-			data, err := readFile(p)
-			if err != nil {
-				continue
-			}
-			it.Data, it.Size = data, int64(len(data))
-		}
-		out = append(out, it)
-	}
-	return out
 }
 
 // dropFiles is a CF_HDROP block: a DROPFILES header — the offset of the path
