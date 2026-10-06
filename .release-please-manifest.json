@@ -1,6 +1,6 @@
 {
   "sdk": "0.2.7",
-  "modules/weave-linux-clipboard": "0.2.3",
+  "modules/weave-linux-clipboard": "0.2.4",
   "modules/weave-linux-display": "0.2.0",
   "modules/weave-linux-exec": "0.2.0",
   "modules/weave-linux-metrics": "0.2.0",

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-linux-clipboard/v0.2.3...modules/weave-linux-clipboard/v0.2.4) (2026-10-06)
+
+
+### Bug Fixes
+
+* **weave-linux-clipboard:** stage copied files on disk, not in a tmpfs /tmp ([#31](https://github.com/weaveplatform/weaveplatform-agent-modules/issues/31)) ([eba2ca7](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/eba2ca7d8eb2a224405ed817da61ca932907e619))
+
 ## [0.2.3](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-linux-clipboard/v0.2.2...modules/weave-linux-clipboard/v0.2.3) (2026-10-06)
 
 
