@@ -201,6 +201,8 @@ func formatsOffered(targets []string) []representation {
 // Stat reports the change token and the formats on offer. Sizes are left out
 // except for files, whose sizes the filesystem knows: asking the owner for its
 // data would make it render every representation on every poll.
+// weaveclipboard's service sizes the rest by reading them, once per change of
+// the token.
 func (c *clipboard) Stat(ctx context.Context) (weavewire.ClipboardStatResponse, error) {
 	m, err := c.mechanism(weavewire.KindClipboardStat)
 	if err != nil {

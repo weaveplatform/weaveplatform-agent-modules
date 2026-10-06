@@ -154,6 +154,8 @@ func fileURLPath(s string) (string, bool) {
 // Sizes are left out except for files, whose sizes the filesystem knows: the
 // pasteboard holds most data only as a promise from the application that
 // copied it, and asking for its size would make that application render it.
+// weaveclipboard's service sizes the rest by reading them, once per change of
+// the count rather than on every poll.
 func (c *clipboard) Stat(context.Context) (weavewire.ClipboardStatResponse, error) {
 	var resp weavewire.ClipboardStatResponse
 	err := c.do(weavewire.KindClipboardStat, func(pb *appkit.Pasteboard) error {

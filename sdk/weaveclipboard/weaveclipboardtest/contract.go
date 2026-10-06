@@ -391,6 +391,11 @@ func checkEveryRepresentation(t testing.TB, h *harness) {
 		if f == weavewire.ClipboardFiles && (st.Formats[i].Count != 2 || st.Formats[i].Size != 19) {
 			t.Errorf("stat reports files as %+v, want 2 files of 19 bytes", st.Formats[i])
 		}
+		// A host auditing a copy it does not read has only these sizes.
+		n := int64(len(sample(f).Data))
+		if f != weavewire.ClipboardFiles && st.Formats[i].Size != n {
+			t.Errorf("stat sizes %s at %d bytes, want %d", f, st.Formats[i].Size, n)
+		}
 	}
 
 	got := h.get(t, weavewire.ClipboardGetRequest{Formats: want})

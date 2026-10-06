@@ -42,7 +42,8 @@ type mem struct {
 	dropFiles   bool                      // read back no files
 	skipFiles   bool                      // write leaves the files out
 	writeErr    error
-	emptyOnFail bool // a refused write still empties the clipboard
+	emptyOnFail bool  // a refused write still empties the clipboard
+	statSize    int64 // stat sizes every other format at this
 }
 
 var errNoClipboard = errors.New("no clipboard here")
@@ -84,7 +85,8 @@ func (m *mem) Stat(context.Context) (weavewire.ClipboardStatResponse, error) {
 			files.Count++
 			files.Size += int64(len(it.Data))
 		default:
-			st.Formats = append(st.Formats, weavewire.ClipboardFormatInfo{Format: it.Format})
+			st.Formats = append(st.Formats,
+				weavewire.ClipboardFormatInfo{Format: it.Format, Size: m.statSize})
 		}
 	}
 	if m.statFiles != nil {
@@ -406,6 +408,12 @@ func TestTheChecksCatchBrokenBackends(t *testing.T) {
 			"text/rtf read back",
 		},
 		{"every: files", checkEveryRepresentation, &mem{dropFiles: true}, "read 0 files"},
+		{
+			"every: stat sizes",
+			checkEveryRepresentation,
+			&mem{statSize: 1},
+			"stat sizes text/plain at 1 bytes",
+		},
 
 		{
 			"get: corrupt",
