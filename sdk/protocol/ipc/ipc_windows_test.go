@@ -227,7 +227,10 @@ func nonAdminServesOwnPipe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	c.Close()
+	// The client stays connected until Accept returns: go-winio drops a
+	// connection the client closed before the server picked it up and waits
+	// for the next one, so closing first can leave Accept waiting forever.
+	defer c.Close()
 	select {
 	case err := <-accepted:
 		if err != nil {
