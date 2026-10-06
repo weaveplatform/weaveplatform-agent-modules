@@ -4,6 +4,7 @@ package main
 
 import (
 	"runtime"
+	"sync"
 
 	"github.com/deploymenttheory/go-bindings-macosplatform/bindings/frameworks/corefoundation"
 	"github.com/deploymenttheory/go-bindings-macosplatform/bindings/frameworks/foundation"
@@ -21,7 +22,17 @@ const cfStringEncodingUTF8 = 0x08000100
 // consoleUsersKey is kIOConsoleUsersKey, a property of the registry root.
 const consoleUsersKey = "IOConsoleUsers"
 
-// withPool runs fn inside an autorelease pool on one OS thread.
+// bindingMu serializes every framework call this module makes. The generated
+// bindings resolve each C function lazily, on its first call, by writing a
+// package-level function variable with no synchronization; the session
+// service's watch loop and a request handler both read the console, so two
+// first calls race on that write. Holding one lock for the whole read keeps
+// the lazy resolution, and the reads themselves (a few microseconds every two
+// seconds), single-file.
+var bindingMu sync.Mutex
+
+// withPool runs fn inside an autorelease pool on one OS thread, with
+// bindingMu held.
 //
 // The Foundation calls behind the conversions below (-description, -allKeys)
 // hand back autoreleased objects. On a thread with no pool they would wait
@@ -30,6 +41,8 @@ const consoleUsersKey = "IOConsoleUsers"
 // The pool is made with objc directly: the binding's AutoreleasePool wrapper
 // also releases the pool from a finalizer, after -drain has freed it.
 func withPool(fn func()) {
+	bindingMu.Lock()
+	defer bindingMu.Unlock()
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	pool := objc.ID(objc.GetClass("NSAutoreleasePool")).Send(objc.RegisterName("new"))
