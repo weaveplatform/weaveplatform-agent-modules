@@ -71,11 +71,15 @@ func (c *Client) ClipboardGetWith(
 	if !out.Streamed {
 		return out, nil
 	}
+	stall := c.sessionTimeout
 	if req.Stream {
 		stop := c.creditDownload(ctx, req.TransferID, d, opts)
 		defer stop()
+		// Paced, a stream may rightly pause between chunks for as long as the
+		// policy holds the credit back.
+		stall = opts.idle()
 	}
-	body, err := c.awaitDownload(ctx, d)
+	body, err := c.awaitDownload(ctx, d, stall)
 	if err != nil {
 		return out, err
 	}
@@ -288,11 +292,15 @@ func (c *Client) routeDownload(_ string, data []byte) {
 // stream that stops making progress for Options.SessionTimeout is abandoned
 // as ErrNoSession: the clipboard module lives in the console session, and a
 // logout mid-transfer stops it with the stream unfinished.
-func (c *Client) awaitDownload(ctx context.Context, d *download) ([]byte, error) {
+func (c *Client) awaitDownload(
+	ctx context.Context,
+	d *download,
+	idle time.Duration,
+) ([]byte, error) {
 	var stall <-chan time.Time
 	var timer *time.Timer
-	if c.sessionTimeout > 0 {
-		timer = time.NewTimer(c.sessionTimeout)
+	if idle > 0 {
+		timer = time.NewTimer(idle)
 		defer timer.Stop()
 		stall = timer.C
 	}
@@ -307,7 +315,7 @@ func (c *Client) awaitDownload(ctx context.Context, d *download) ([]byte, error)
 			return d.buf.Bytes(), nil
 		case <-d.progress:
 			if timer != nil {
-				timer.Reset(c.sessionTimeout)
+				timer.Reset(idle)
 			}
 		case <-stall:
 			return nil, fmt.Errorf("%w: the clipboard stream stopped: %w",

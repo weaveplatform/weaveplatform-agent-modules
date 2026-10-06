@@ -16,9 +16,10 @@ import (
 
 // sendIdle is how long a stream to the host may go unacknowledged before it is
 // abandoned: the host went away, or its engine stopped mid-transfer. A host
-// pacing a transfer to its bandwidth policy acknowledges every
-// ClipboardCreditBytes, which even a slow policy does many times within this.
-var sendIdle = time.Minute
+// pacing a transfer to its bandwidth policy acknowledges each chunk at the
+// policy's rate, so this is far longer than even a slow policy takes over one;
+// a stream abandoned late costs only an open file.
+var sendIdle = 10 * time.Minute
 
 // offer is the newest streaming get: the files it listed as Deferred, for the
 // host to fetch, and the context its streams run under, which a newer get or a

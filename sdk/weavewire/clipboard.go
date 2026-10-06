@@ -107,7 +107,9 @@ const (
 	// fills one and stalls the frames behind it.
 	ClipboardWindowBytes = 1 << 20
 	// ClipboardCreditBytes is how often a receiver acknowledges: every this
-	// many bytes written, and at the end.
+	// many bytes written, and at the end. A receiver that paces its
+	// acknowledgements to a bandwidth policy acknowledges every chunk, so a
+	// slow policy never leaves the sender waiting long for the next.
 	ClipboardCreditBytes = 256 << 10
 	// MaxClipboardRepresentationBytes caps one representation other than a
 	// file. Those live in memory on both sides — the OS's clipboard holds

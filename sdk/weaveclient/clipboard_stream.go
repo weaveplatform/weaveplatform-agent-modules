@@ -74,6 +74,18 @@ func (o TransferOptions) reserve() int64 {
 	return o.Reserve
 }
 
+// creditEvery is how many bytes a receiver writes between acknowledgements:
+// ClipboardCreditBytes, or one chunk when it paces them. A paced credit waits
+// on the bandwidth policy, and a slow policy holding back a quarter of a
+// mebibyte would leave the sender idle long enough to give up; a chunk at a
+// time keeps it moving at the policy's rate.
+func (o TransferOptions) creditEvery() int64 {
+	if o.Pace != nil {
+		return weavewire.MaxChunkBytes
+	}
+	return weavewire.ClipboardCreditBytes
+}
+
 func (o TransferOptions) progress(n int64) {
 	if o.Progress != nil && n > 0 {
 		o.Progress(n)
@@ -119,7 +131,7 @@ func (c *Client) ClipboardCancel(transferID string) error {
 }
 
 // creditDownload acknowledges a streaming get's download as its bytes arrive,
-// every ClipboardCreditBytes, paced by opts.Pace. The acknowledgements are
+// paced by opts.Pace (see creditEvery). The acknowledgements are
 // written from a goroutine of their own: the read loop that receives the bytes
 // must never block on a write.
 func (c *Client) creditDownload(
@@ -144,7 +156,7 @@ func (c *Client) creditDownload(
 			d.mu.Lock()
 			got := int64(d.buf.Len())
 			d.mu.Unlock()
-			if got-acked < weavewire.ClipboardCreditBytes {
+			if got-acked < opts.creditEvery() {
 				continue
 			}
 			if opts.Pace != nil && opts.Pace(ctx, int(got-acked)) != nil {
@@ -275,7 +287,7 @@ func (c *Client) ClipboardFetch(
 			if whole {
 				return FetchedFile{Path: sink.Path(), Size: size, SHA256: sink.Digest()}, nil
 			}
-			if n := sink.Written(); n-acked >= weavewire.ClipboardCreditBytes {
+			if n := sink.Written(); n-acked >= opts.creditEvery() {
 				if opts.Pace != nil {
 					if err := opts.Pace(ctx, int(n-acked)); err != nil {
 						return FetchedFile{}, err

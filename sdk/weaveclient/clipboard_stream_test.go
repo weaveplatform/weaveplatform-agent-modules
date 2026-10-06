@@ -602,10 +602,18 @@ func TestStreamingGetCreditsArePaced(t *testing.T) {
 	client, b := wireClipboard(t)
 	b.items = []weavewire.ClipboardItem{{Format: weavewire.ClipboardPNG, Data: make([]byte, 3<<20)}}
 	ctx := timeoutCtx(t)
+	var paced atomic.Int64
 	got, err := client.ClipboardGetWith(ctx, weavewire.ClipboardGetRequest{Stream: true},
-		weaveclient.TransferOptions{Pace: func(context.Context, int) error { return nil }})
+		weaveclient.TransferOptions{Pace: func(_ context.Context, n int) error {
+			paced.Add(int64(n))
+			return nil
+		}})
 	if err != nil || len(got.Items) != 1 || len(got.Items[0].Data) != 3<<20 {
 		t.Fatalf("get %d items, %v", len(got.Items), err)
+	}
+	// Everything but the tail the guest sends unasked (its window) is paced.
+	if n := paced.Load(); n < 2<<20 {
+		t.Errorf("paced %d of %d bytes", n, 3<<20)
 	}
 	short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

@@ -37,8 +37,8 @@ core:
 - **Integrity.** Every stream's last chunk carries the SHA-256 of what was sent. A file
   takes its final name, and can be published to a clipboard, only once all of it has
   arrived at the size declared with that digest; anything else is deleted.
-- **Flow control.** The receiver acknowledges every 256 KiB written, and the sender keeps
-  at most 1 MiB unacknowledged. A transfer of any size therefore holds at most that much
+- **Flow control.** The receiver acknowledges every 256 KiB written (every chunk when it
+  paces to a bandwidth policy), and the sender keeps at most 1 MiB unacknowledged. A transfer of any size therefore holds at most that much
   in any queue on the channel, and never stalls the exec, power and control frames that
   share it. A host paces its sends and acknowledgements to its bandwidth policy.
 - **Disk space.** The receiving side refuses an item its disk has no room for, keeping
