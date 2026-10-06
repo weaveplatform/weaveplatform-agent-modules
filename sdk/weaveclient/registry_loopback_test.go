@@ -686,18 +686,33 @@ func TestExecSessionUndeliverableInput(t *testing.T) {
 			if !c.ends {
 				// Input is refused from now on, once the read loop has seen
 				// core's answer. Until then a chunk may still go out, so the
-				// guest end drains whatever arrives.
+				// guest end drains whatever arrives, and answers a fence as
+				// core does: the refusal also tells the client core reports
+				// them, so a close racing it confirms itself with a
+				// modules.list, which left unanswered would wait forever.
 				go func() {
 					for {
-						if _, err := hvchannel.ReadEnvelope(guest.r); err != nil {
+						env, err := hvchannel.ReadEnvelope(guest.r)
+						if err != nil {
 							return
 						}
+						if env.Kind != hvchannel.KindModulesList {
+							continue
+						}
+						data, _ := json.Marshal(weaveclient.ModulesSnapshot{Revision: 1})
+						guest.wmu.Lock()
+						_ = hvchannel.WriteEnvelope(guest.w, hvchannel.Envelope{
+							Module: hvchannel.ControlModule, Kind: hvchannel.KindModulesListResult,
+							Data: data, ID: env.ID,
+						})
+						_ = guest.w.Flush()
+						guest.wmu.Unlock()
 					}
 				}()
 				deadline := time.Now().Add(quick)
 				var err error
 				for ; time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-					if err = s.CloseStdin(); err != nil {
+					if err = s.CloseStdinContext(ctx); err != nil {
 						break
 					}
 				}
