@@ -32,7 +32,7 @@ func TestClipboardThroughTheChannel(t *testing.T) {
 	}
 	guestConn, hostConn := net.Pipe()
 	core := weavemoduletest.NewCore(guestConn, pub)
-	core.Serve(t, weaveclipboard.NewService(c))
+	core.Serve(t, weaveclipboard.NewService(c, weaveclipboard.WithStagingDir(t.TempDir())))
 	go core.Run()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
