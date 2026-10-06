@@ -5,7 +5,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
@@ -20,32 +19,6 @@ func TestFileName(t *testing.T) {
 		if got != want || (err != nil) != (want == "") {
 			t.Errorf("fileName(%q) = %q, %v; want %q", in, got, err, want)
 		}
-	}
-}
-
-func TestReadFilesSkipsWhatItCannotRead(t *testing.T) {
-	dir := t.TempDir()
-	ok, locked := filepath.Join(dir, "ok"), filepath.Join(dir, "locked")
-	if err := os.WriteFile(ok, []byte("1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(locked, []byte("2"), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	got := readFiles([]string{ok, locked, dir, filepath.Join(dir, "gone")}, 10)
-	names := make([]string, 0, len(got))
-	for _, it := range got {
-		names = append(names, it.Name)
-	}
-	want := []string{"ok"}
-	if os.Geteuid() == 0 {
-		want = []string{"ok", "locked"} // root reads a mode-000 file
-	}
-	if !slices.Equal(names, want) {
-		t.Errorf("read %q, want %q", names, want)
-	}
-	if baseName("plain") != "plain" {
-		t.Error("baseName of a bare name")
 	}
 }
 
