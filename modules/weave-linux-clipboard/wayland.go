@@ -475,9 +475,12 @@ func (d *dataControl) read(ctx context.Context, mime string) ([]byte, error) {
 		deadline = dl
 	}
 	_ = r.SetReadDeadline(deadline)
-	data, err := io.ReadAll(io.LimitReader(r, maxRead))
+	data, err := io.ReadAll(io.LimitReader(r, maxRead+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s from the clipboard: %w", mime, err)
+	}
+	if int64(len(data)) > maxRead {
+		return nil, fmt.Errorf("%s: %w", mime, errTooLarge)
 	}
 	return data, nil
 }

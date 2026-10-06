@@ -368,6 +368,19 @@ func TestDataControlLargeContent(t *testing.T) {
 	if err != nil || len(got.Items) != 1 || !bytes.Equal(got.Items[0].Data, big) {
 		t.Fatalf("read back %d items, %v", len(got.Items), err)
 	}
+	// Over what one read may hold, it is sized and unread, never cut short.
+	defer func(n int64) { maxRead = n }(maxRead)
+	maxRead = int64(len(big)) - 1
+	over, err := c.Read(
+		context.Background(),
+		[]weavewire.ClipboardFormat{weavewire.ClipboardPNG},
+		1<<30,
+	)
+	if err != nil || len(over.Items) != 1 || over.Items[0].Data != nil ||
+		over.Items[0].Size != int64(len(big)) {
+		t.Fatalf("an over-large read: %+v, %v", over.Items, err)
+	}
+	maxRead = 1 << 30
 	if !slices.Contains(c.Support().Formats, weavewire.ClipboardFormatSupport{
 		Format: weavewire.ClipboardPNG, Held: true, Native: "image/png",
 	}) {

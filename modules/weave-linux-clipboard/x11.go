@@ -490,7 +490,7 @@ func (x *x11) provide(e xproto.SelectionRequestEvent, prop xproto.Atom) bool {
 		last: time.Now(),
 	}
 	size := make([]byte, 4)
-	xgb.Put32(size, uint32(len(data))) //nolint:gosec // G115: under MaxClipboardBytes
+	xgb.Put32(size, uint32(len(data))) //nolint:gosec // G115: under maxRead
 	xproto.ChangeProperty(x.owner, xproto.PropModeReplace, e.Requestor, prop, incr, 32, 1, size)
 	return true
 }
@@ -620,6 +620,9 @@ func (x *x11) read(ctx context.Context, target string) ([]byte, error) {
 		}
 		if len(chunk) == 0 {
 			return out, nil
+		}
+		if int64(len(out)+len(chunk)) > maxRead {
+			return nil, fmt.Errorf("%s: %w", target, errTooLarge)
 		}
 		out = append(out, chunk...)
 	}

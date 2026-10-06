@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -63,9 +64,14 @@ type offer struct {
 	data   []byte
 }
 
-// maxRead caps one representation read from the clipboard: what one set may
-// carry in total.
-const maxRead = weavewire.MaxClipboardBytes
+// maxRead caps one representation read from the clipboard, which is held in
+// memory: one larger is reported sized and unread (errTooLarge), so the
+// service lists it as omitted rather than truncating it. A variable so the
+// tests can reach it. Files are not read here: they stream from disk.
+var maxRead int64 = weavewire.MaxClipboardRepresentationBytes
+
+// errTooLarge reports a representation over maxRead.
+var errTooLarge = errors.New("the representation is larger than one read may hold")
 
 func newClipboard() *clipboard {
 	return &clipboard{
@@ -237,11 +243,12 @@ func (c *clipboard) Stat(ctx context.Context) (weavewire.ClipboardStatResponse, 
 }
 
 // Read returns the representations asked for, and the token of the
-// clipboard they were read from.
+// clipboard they were read from. An owner hands a representation over whole,
+// so the host's cap is the service's to apply; files are offered by path.
 func (c *clipboard) Read(
 	ctx context.Context,
 	formats []weavewire.ClipboardFormat,
-	maxBytes int64,
+	_ int64,
 ) (weaveclipboard.Contents, error) {
 	m, err := c.mechanism(weavewire.KindClipboardGet)
 	if err != nil {
@@ -258,13 +265,22 @@ func (c *clipboard) Read(
 			continue
 		}
 		data, err := m.read(ctx, r.target)
+		if errors.Is(err, errTooLarge) {
+			// Sized and unread: the service lists it as omitted.
+			out.Items = append(
+				out.Items,
+				weavewire.ClipboardItem{Format: r.format, Size: maxRead + 1},
+			)
+			continue
+		}
 		if err != nil {
 			// The owner may have changed between the list and the read;
 			// leave the format out rather than fail.
 			continue
 		}
 		if r.format == weavewire.ClipboardFiles {
-			out.Items = append(out.Items, readFiles(parseURIList(data), maxBytes)...)
+			// By path, unread: the service streams them from disk.
+			out.Files = weaveclipboard.FilesAt(parseURIList(data))
 			continue
 		}
 		out.Items = append(out.Items, weavewire.ClipboardItem{
@@ -280,6 +296,25 @@ func (c *clipboard) Read(
 func (c *clipboard) Write(
 	ctx context.Context,
 	items []weavewire.ClipboardItem,
+) (weavewire.ClipboardSetResponse, error) {
+	var paths []string
+	if slices.ContainsFunc(items, func(it weavewire.ClipboardItem) bool {
+		return it.Format == weavewire.ClipboardFiles
+	}) {
+		var err error
+		if paths, err = c.stage.files(items); err != nil {
+			return weavewire.ClipboardSetResponse{}, err
+		}
+	}
+	return c.WriteFiles(ctx, items, paths)
+}
+
+// WriteFiles is Write with the files already staged, at paths: the service
+// streams a host's files to disk and hands them over here by path.
+func (c *clipboard) WriteFiles(
+	ctx context.Context,
+	items []weavewire.ClipboardItem,
+	paths []string,
 ) (weavewire.ClipboardSetResponse, error) {
 	m, err := c.mechanism(weavewire.KindClipboardSet)
 	if err != nil {
@@ -309,10 +344,6 @@ func (c *clipboard) Write(
 	var offers []offer
 	for _, f := range formats {
 		if f == weavewire.ClipboardFiles {
-			paths, err := c.stage.files(items)
-			if err != nil {
-				return weavewire.ClipboardSetResponse{}, err
-			}
 			offers = append(offers, fileOffers(paths)...)
 			continue
 		}
@@ -393,38 +424,3 @@ func pickTarget(offered []string, f weavewire.ClipboardFormat) (string, bool) {
 // normalise drops the whitespace some applications put around a MIME
 // parameter ("text/plain; charset=utf-8").
 func normalise(t string) string { return strings.ReplaceAll(t, " ", "") }
-
-// readFiles reads each copied file's content: the paths mean nothing on the
-// host, so the content is what crosses. A directory or unreadable path is
-// skipped, and a file over maxBytes is returned with its size and no data so
-// the service lists it as omitted rather than truncating it.
-func readFiles(paths []string, maxBytes int64) []weavewire.ClipboardItem {
-	var out []weavewire.ClipboardItem
-	for _, p := range paths {
-		fi, err := os.Stat(p)
-		if err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		it := weavewire.ClipboardItem{
-			Format: weavewire.ClipboardFiles,
-			Name:   baseName(p),
-			Size:   fi.Size(),
-		}
-		if fi.Size() <= maxBytes {
-			data, err := os.ReadFile(p) //nolint:gosec // G304: the path is one the user copied
-			if err != nil {
-				continue
-			}
-			it.Data, it.Size = data, int64(len(data))
-		}
-		out = append(out, it)
-	}
-	return out
-}
-
-func baseName(p string) string {
-	if i := strings.LastIndexByte(p, '/'); i >= 0 {
-		return p[i+1:]
-	}
-	return p
-}
