@@ -5,8 +5,10 @@
 // ext-data-control-v1 or wlr-data-control-unstable-v1 protocol, X11 (and
 // XWayland, under a compositor with neither) as the CLIPBOARD selection's
 // owner. On a Wayland session with neither, it falls back to wl-clipboard,
-// which holds one representation per copy, and stat says so. See
-// docs/clipboard.md in the repository.
+// which holds one representation per copy, and stat says so. Copied files
+// stream to and from disk, staged in the console user's cache directory, or
+// /var/tmp when that is held in memory (tmpfs or ramfs), so a large copy
+// never fills RAM. See docs/clipboard.md in the repository.
 //
 // Every other file is constrained to linux. The module is built, tested and
 // released only for the OS its manifest names, so building it for another OS
