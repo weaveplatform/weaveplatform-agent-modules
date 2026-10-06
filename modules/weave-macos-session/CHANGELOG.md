@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-macos-session/v0.2.1...modules/weave-macos-session/v0.2.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* session module binding race and testkit stream status ([d50eff7](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/d50eff719a9c1cb0b0a691d1990aa791aa523906))
+* **weave-macos-session:** serialize framework calls across the watch loop and requests ([d547e0e](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/d547e0eb6b21685690f56baa7cc907f252ebb86f))
+
 ## [0.2.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-macos-session/v0.2.0...modules/weave-macos-session/v0.2.1) (2026-10-05)
 
 

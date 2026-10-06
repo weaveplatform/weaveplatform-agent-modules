@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "id": "weave-macos-clipboard",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "protocol": 1,
   "zone": "A",
   "privilege": "user",

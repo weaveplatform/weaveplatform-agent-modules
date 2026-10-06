@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.4](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-windows-clipboard/v0.2.3...modules/weave-windows-clipboard/v0.2.4) (2026-10-06)
+
+
+### Bug Fixes
+
+* **modulezip:** install over read-only files ([2a17e11](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/2a17e1100e9a8bd389b9ce2cdbb55a10e896099d))
+* **weave-windows-clipboard:** carry bitmap images both ways ([dd4e0df](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/dd4e0df4b3e2454d27c1b237c8b6a2ac6d1a99e0))
+* Windows bitmap images, sized clipboard stats and read-only module installs ([e6aac85](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/e6aac8551103bb4b43a739379d4a2c8836efaebd))
+
 ## [0.2.3](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-windows-clipboard/v0.2.2...modules/weave-windows-clipboard/v0.2.3) (2026-10-06)
 
 
