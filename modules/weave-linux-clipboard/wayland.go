@@ -249,12 +249,14 @@ func (d *dataControl) run() {
 	err := d.c.read(d.handle)
 	d.mu.Lock()
 	d.err = err
+	// done closes before the round trips are woken: one woken first would
+	// find the connection still alive and report its sync as answered.
+	close(d.done)
 	for _, ch := range d.syncs {
 		close(ch)
 	}
 	clear(d.syncs)
 	d.mu.Unlock()
-	close(d.done)
 }
 
 // roundtrip waits until the compositor has handled every request sent so
