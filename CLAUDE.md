@@ -29,7 +29,9 @@ multi-module specifics of this repository noted.
   [chi](https://github.com/go-chi/chi).
 - **CI.** OS matrices use the `-latest` runner labels. Actions are pinned by commit
   SHA with the version in a comment; Dependabot keeps them current. Workflows
-  pass actionlint with no shellcheck findings.
+  pass actionlint with no shellcheck findings. A pull request runs only the
+  modules its change selects (`.github/scripts/select-modules.sh`; the rules are
+  in CONTRIBUTING.md); main, the nightly run and a manual run test everything.
 - **Linting.** golangci-lint with `.golangci.yml` is the only linter, and it blocks.
 - **Workspace.** This repository is a Go workspace: `go.work` is committed and lists
   every module (`sdk/`, `modules/weave-<os>-<capability>/`, `packaging/moduledeb`,
