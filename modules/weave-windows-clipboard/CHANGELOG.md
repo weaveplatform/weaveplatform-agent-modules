@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-windows-clipboard/v0.2.5...modules/weave-windows-clipboard/v0.2.6) (2026-10-06)
+
+
+### Bug Fixes
+
+* stage clipboard files on disk, in a directory of the user's own ([#29](https://github.com/weaveplatform/weaveplatform-agent-modules/issues/29)) ([2bac1a4](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/2bac1a45ba06e9d3b651890bd22d9b3eb36dbd39))
+
 ## [0.2.5](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-windows-clipboard/v0.2.4...modules/weave-windows-clipboard/v0.2.5) (2026-10-06)
 
 
