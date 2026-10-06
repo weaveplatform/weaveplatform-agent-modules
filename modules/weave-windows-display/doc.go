@@ -5,6 +5,10 @@
 // It runs in the console user's session, on the interactive desktop:
 // display settings are applied per user, and session 0 has no displays.
 //
+// Core launches it as the console user, which is neither SYSTEM nor an
+// elevated Administrator, so the module's own pipe must admit that user as
+// well as core: the SDK's ipc.Listen grants the process's own user SID.
+//
 // Every other file is constrained to windows. The module is built, tested and
 // released only for the OS its manifest names, so building it for another OS
 // fails at link time ("function main is undeclared") rather than producing a
