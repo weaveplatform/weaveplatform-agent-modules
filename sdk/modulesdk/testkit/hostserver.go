@@ -128,9 +128,12 @@ func (s *transportServer) Receive(
 	_ *agentv1.TransportReceiveRequest,
 	stream agentv1.TransportService_ReceiveServer,
 ) error {
-	// The stub delivers nothing inbound; block until the module hangs up.
+	// The stub delivers nothing inbound; block until the module hangs up,
+	// then end with the caller's context error. Returning nil
+	// here sent an OK status that could reach the caller before its own
+	// deadline fired, so the caller saw io.EOF instead of that error.
 	<-stream.Context().Done()
-	return nil
+	return contextStatus(stream.Context())
 }
 
 // --- Policy ---
@@ -164,7 +167,7 @@ func (s *policyServer) Watch(
 		}
 		select {
 		case <-stream.Context().Done():
-			return nil
+			return contextStatus(stream.Context())
 		case <-notify:
 		}
 	}
@@ -233,7 +236,7 @@ func (s *eventsServer) Subscribe(
 	for {
 		select {
 		case <-stream.Context().Done():
-			return nil
+			return contextStatus(stream.Context())
 		case ev := <-sub.ch:
 			if err := stream.Send(&agentv1.Event{
 				Topic:         ev.Topic,
@@ -284,7 +287,7 @@ func (s *registryServer) Watch(
 		}
 		select {
 		case <-stream.Context().Done():
-			return nil
+			return contextStatus(stream.Context())
 		case <-notify:
 		}
 	}
@@ -306,4 +309,11 @@ func (s *registryServer) snapshot() *agentv1.RegistrySnapshot {
 		out.Modules = append(out.Modules, m)
 	}
 	return out
+}
+
+// contextStatus is the gRPC status for a stream that ended because its
+// caller went away: Canceled or DeadlineExceeded, as grpc-go reports it.
+func contextStatus(ctx context.Context) error {
+	//nolint:wrapcheck // a gRPC status is the handler's contract
+	return status.FromContextError(ctx.Err()).Err()
 }
