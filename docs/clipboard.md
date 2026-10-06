@@ -44,6 +44,13 @@ core:
 - **Disk space.** The receiving side refuses an item its disk has no room for, keeping
   256 MiB free beyond it, and checks again every 32 MiB written. A refused item is dropped
   alone, with the reason `no-space`; the rest of the copy still crosses.
+- **Where it stages.** On the guest, under a directory of the console user's own in
+  their cache directory (`~/.cache/weave/clipboard`, `~/Library/Caches/weave/clipboard`,
+  `%LocalAppData%\weave\clipboard`), closed to everyone else (0700, or an access list of
+  that user alone on Windows). On Linux, where that directory is on tmpfs or ramfs, it is
+  `/var/tmp/weave-clipboard-<uid>` instead, so a large file never lands in memory. Each run
+  of the module stages in a directory of its own there, and at start the module removes
+  partial files earlier runs left, and run directories a week old.
 - **Supersede and cancel.** A newer transfer supersedes an older one: whatever the older
   one still had in flight stops, and what it staged is deleted. `weave.clipboard.cancel`
   does the same at once. A set's files stay on the guest's disk until a newer set replaces

@@ -121,7 +121,10 @@ func (c *clipboard) Write(
 }
 
 func TestClipboardRoundTripInline(t *testing.T) {
-	client := wire(t, weaveclipboard.NewService(&clipboard{}))
+	client := wire(
+		t,
+		weaveclipboard.NewService(&clipboard{}, weaveclipboard.WithStagingDir(t.TempDir())),
+	)
 	ctx := timeout(t)
 
 	set, err := client.ClipboardSet(ctx, []weavewire.ClipboardItem{
@@ -153,7 +156,10 @@ func TestClipboardRoundTripInline(t *testing.T) {
 // Content over the inline limit uploads and downloads as chunk streams, and
 // the caller never sees the difference.
 func TestClipboardRoundTripStreamed(t *testing.T) {
-	client := wire(t, weaveclipboard.NewService(&clipboard{}))
+	client := wire(
+		t,
+		weaveclipboard.NewService(&clipboard{}, weaveclipboard.WithStagingDir(t.TempDir())),
+	)
 	ctx := timeout(t)
 
 	png := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, weavewire.ClipboardInlineBytes/2)

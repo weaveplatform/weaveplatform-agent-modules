@@ -153,7 +153,8 @@ type harness struct {
 
 func start(t testing.TB, b weaveclipboard.Backend) *harness {
 	t.Helper()
-	h := &harness{Harness: weavemoduletest.Start(t, weaveclipboard.NewService(b))}
+	h := &harness{Harness: weavemoduletest.Start(
+		t, weaveclipboard.NewService(b, weaveclipboard.WithStagingDir(t.TempDir())))}
 	h.Timeout = 30 * time.Second
 	return h
 }

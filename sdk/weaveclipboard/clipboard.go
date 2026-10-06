@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/internal/cliptransfer"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveagent"
@@ -164,6 +165,21 @@ func NewService(b Backend, opts ...Option) *Service {
 		o(s)
 	}
 	return s
+}
+
+// Start removes what earlier runs left in the staging directory: partial files of
+// transfers that died with them, and run directories long abandoned. It looks
+// wherever staging may have gone and creates nothing.
+func (s *Service) Start(context.Context) error {
+	bases := []string{s.rootDir}
+	if s.rootDir == "" {
+		bases = append(stagingCandidates(), fallbackStaging())
+	}
+	now := time.Now()
+	for _, b := range bases {
+		cleanStale(b, now)
+	}
+	return nil
 }
 
 // Stop ends every transfer in flight and deletes what it staged. The files on
