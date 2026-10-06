@@ -11,10 +11,53 @@ or Windows guest with one engine and one policy.
 | `weave.clipboard.stat` | The change token, the formats on the clipboard now with their sizes, and what the guest can hold (`support`) |
 | `weave.clipboard.get` | The representations asked for (`formats`), each up to `max_bytes`; one over the cap is listed in `omitted` with its size, never truncated |
 | `weave.clipboard.set` | Replaces the clipboard with every representation sent, as one entry; lists what it wrote (`written`) and what it did not (`unwritten`) |
+| `weave.clipboard.fetch` | Streams one file of a streaming get from the guest's disk |
+| `weave.clipboard.stage` | Readies the guest to receive one item of a set, if its disk has room |
+| `weave.clipboard.put` | One chunk of a staged item |
+| `weave.clipboard.credit` | The host's acknowledgement of a stream's bytes, which lets the guest send more |
+| `weave.clipboard.cancel` | Abandons a transfer: what is in flight stops, and what was staged is deleted |
 
-Content over 256 KiB travels as chunk streams (`weave.clipboard.upload`,
-`weave.clipboard.download`), up to 64 MiB in all. The wire types are in
-[`sdk/weavewire/clipboard.go`](../sdk/weavewire/clipboard.go).
+The wire types are in [`sdk/weavewire/clipboard.go`](../sdk/weavewire/clipboard.go).
+
+### Transfer of any size
+
+A module reports `streaming` in every stat. With such a module a copy of any size crosses
+in either direction, and no file is ever held whole in memory, on the host, the guest or
+core:
+
+- **Guest to host.** The host asks a get with `stream`. Files come back `deferred`: named
+  and sized, without data. The host judges each against its own bounds and fetches each
+  one it takes (`weave.clipboard.fetch`); its bytes stream from the guest's disk as
+  `weave.clipboard.download` chunks, and the host writes them to a partial file as they
+  arrive.
+- **Host to guest.** The host stages each item too large to carry inline
+  (`weave.clipboard.stage`), streams it (`weave.clipboard.put`), and the guest writes it to
+  a partial file in its staging directory as it arrives, acknowledging as it goes
+  (`weave.clipboard.staged`). The set that follows names each staged item by its stream.
+- **Integrity.** Every stream's last chunk carries the SHA-256 of what was sent. A file
+  takes its final name, and can be published to a clipboard, only once all of it has
+  arrived at the size declared with that digest; anything else is deleted.
+- **Flow control.** The receiver acknowledges every 256 KiB written, and the sender keeps
+  at most 1 MiB unacknowledged. A transfer of any size therefore holds at most that much
+  in any queue on the channel, and never stalls the exec, power and control frames that
+  share it. A host paces its sends and acknowledgements to its bandwidth policy.
+- **Disk space.** The receiving side refuses an item its disk has no room for, keeping
+  256 MiB free beyond it, and checks again every 32 MiB written. A refused item is dropped
+  alone, with the reason `no-space`; the rest of the copy still crosses.
+- **Supersede and cancel.** A newer transfer supersedes an older one: whatever the older
+  one still had in flight stops, and what it staged is deleted. `weave.clipboard.cancel`
+  does the same at once. A set's files stay on the guest's disk until a newer set replaces
+  them on the clipboard.
+
+Representations other than files live in memory on both sides, since the OS's clipboard
+holds them there. They cross inline up to 256 KiB and as a flow-controlled download or a
+staged item above it. One larger than 1 GiB is listed in `omitted` with its size, never
+truncated.
+
+A host or module from before streaming transfer uses the older path: content over 256 KiB
+as `weave.clipboard.upload` and `weave.clipboard.download` streams held in memory, up to
+64 MiB in all. A host that meets such a module should leave out what does not fit and
+report it, rather than fail the copy.
 
 ## Canonical formats
 
@@ -40,7 +83,8 @@ pixel's is zero, which is padding, not transparency. A set's PNG is also written
 applications paste it; reading back returns the PNG as it was sent.
 
 Files cross as their content: the guest stages received files and puts their paths on its
-clipboard, so a paste copies real files, and a get reads the files the clipboard names.
+clipboard, so a paste copies real files, and a get offers the files the clipboard names,
+read from disk as they stream.
 
 **No silent drops.** Stat's `support` lists every canonical format once, in the order
 above, with whether the guest holds it, its native name, or why not. A set leaves out what
@@ -113,7 +157,11 @@ stat lists the formats present and the guest's support; that a get honours `form
 `max_bytes`; that stat sizes every format it lists; that a set of every canonical format reads back
 byte for byte; files (staged, named by base name, size-capped and reported when omitted, a
 bad name refused without touching the clipboard); a copy of files some of which are over
-the cap, which leaves out only those, wherever they are in the copy, and brings the rest; content large enough to stream both ways; and the error answers,
+the cap, which leaves out only those, wherever they are in the copy, and brings the rest;
+content large enough to stream both ways; a file larger than the older path's 64 MiB
+ceiling sent to the guest and fetched back through the real client and channel framing,
+verified by its SHA-256 (72 MiB by default, or `WEAVE_CLIPBOARD_CONTRACT_LARGE_MIB`; it is
+generated in the test's temporary directory, never stored); and the error answers,
 `unsupported` included.
 
 `make test-linux-clipboard` runs the Linux module's tests in Docker, as an ordinary user,

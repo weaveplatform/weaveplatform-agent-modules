@@ -197,6 +197,9 @@ type Chunk struct {
 	EOF bool `json:"eof,omitempty"`
 	// Err explains why a stream ended early. Only meaningful with EOF.
 	Err string `json:"err,omitempty"`
+	// Digest is the hex SHA-256 of everything the stream carried, set on the
+	// EOF of a stream whose receiver checks it (a clipboard file).
+	Digest string `json:"sha256,omitempty"`
 }
 
 // --- Per-op payloads ---

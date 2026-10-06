@@ -103,7 +103,7 @@ type ExecExit struct {
 // IsOrderedInbound reports whether a host→guest kind must be applied in the
 // order the host sent it, rather than concurrently with its neighbours.
 //
-// Exec stdin and a clipboard upload qualify. Their chunks are meaningful only
+// Exec stdin and a clipboard upload or put qualify. Their chunks are meaningful only
 // in sequence, and the EOF that ends them is carried in the same kind — so a dispatcher
 // that runs them concurrently can close the pipe before the data it was meant to
 // carry, and every write after that fails with "file already closed". The host
@@ -120,7 +120,7 @@ type ExecExit struct {
 // operation delay an urgent one.
 func IsOrderedInbound(kind string) bool {
 	switch kind {
-	case KindExecStdin, KindClipboardUpload, KindClipboardSet:
+	case KindExecStdin, KindClipboardUpload, KindClipboardSet, KindClipboardPut:
 		return true
 	}
 	return false

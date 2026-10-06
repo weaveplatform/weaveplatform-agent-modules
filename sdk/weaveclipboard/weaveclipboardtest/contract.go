@@ -8,8 +8,10 @@
 // reports and what the guest says it can hold, a get's format filter and size
 // cap, a set of every canonical format read back representation by
 // representation, files (staged, named, capped and reported when omitted),
-// content large enough to stream both ways, and the error answers, the
-// unsupported code included.
+// content large enough to stream both ways, a file larger than the older
+// transfer's 64 MiB ceiling streamed both ways from and to disk through the
+// real client and channel framing, and the error answers, the unsupported
+// code included.
 //
 // A module runs it against a clipboard of the test's own wherever its OS
 // offers one, never the clipboard of the machine running the test: macOS
@@ -44,6 +46,9 @@ type Contract struct {
 	// answer unsupported. Leave it nil on an OS where a session always has a
 	// clipboard; the check is then skipped, saying so.
 	Unavailable func(t *testing.T) weaveclipboard.Backend
+	// LargeFileBytes is the size of the file LargeFilesStreamWithNoCeiling
+	// sends both ways; zero takes LargeFileEnv, or 72 MiB.
+	LargeFileBytes int64
 }
 
 // Sample content, one representation of each canonical format. The bytes
@@ -119,10 +124,15 @@ func RunContract(t *testing.T, c Contract) {
 		{"Files", checkFiles},
 		{"FilesOverTheCapLeaveTheRest", checkFilesOverCap},
 		{"LargeContentStreams", checkLarge},
+		{"LargeFilesStreamWithNoCeiling", nil},
 		{"Errors", checkErrors},
 	}
 	for _, ck := range checks {
 		t.Run(ck.name, func(t *testing.T) {
+			if ck.run == nil {
+				checkLargeFiles(t, c.New(t), c.LargeFileBytes)
+				return
+			}
 			ck.run(t, start(t, c.New(t)))
 		})
 	}

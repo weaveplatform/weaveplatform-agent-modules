@@ -1,6 +1,10 @@
 // Package weaveclipboard is the clipboard capability: report what the console
-// user's clipboard holds, read it, and replace it, with content of any size up
-// to weavewire.MaxClipboardBytes carried inline or as chunk streams.
+// user's clipboard holds, read it, and replace it. Content of any size crosses
+// to a host that streams (weavewire.ClipboardStatResponse.Streaming): files
+// stream from and to disk, never held whole in memory, each verified by its
+// SHA-256 before it is published. A host that does not stream gets the older
+// transfer, inline or as chunk streams of at most weavewire.MaxClipboardBytes
+// in all.
 //
 // It is mechanism only. Which direction may flow, which formats and whether
 // files may cross are decided by the host before it asks; the service applies
@@ -13,10 +17,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/internal/cliptransfer"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weaveagent"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavemodule"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
@@ -32,7 +40,10 @@ type Backend interface {
 	// Read returns the representations in formats (all it has when formats
 	// is empty), with their data. A representation larger than maxBytes may
 	// be returned with its Size and no Data rather than read; the service
-	// leaves those out of the reply and lists them as omitted.
+	// leaves those out of the reply and lists them as omitted. Files are
+	// best returned by path in Contents.Files, unread (FilesAt): the
+	// service then streams them, and reads one into memory only for a host
+	// too old to stream.
 	Read(ctx context.Context, formats []weavewire.ClipboardFormat, maxBytes int64) (Contents, error)
 	// Write replaces the clipboard with items, every one a representation
 	// of the same content, and reports the token afterwards and the formats
@@ -77,6 +88,8 @@ func CanonicalSupport(natives map[weavewire.ClipboardFormat]string) Support {
 type Contents struct {
 	ChangeToken uint64
 	Items       []weavewire.ClipboardItem
+	// Files are copied files offered by path, sized and not read.
+	Files []File
 }
 
 // Errors a host can branch on, through the guest error's text.
@@ -105,6 +118,25 @@ type Service struct {
 	uploads map[string]*upload
 	order   []string
 
+	// Streaming transfer. rootDir is where staging goes (a new temporary
+	// directory when empty) and root the directory in use; dirs numbers the
+	// transfer directories under it. offer is the newest streaming get,
+	// windows the streams to the host by id, inbound the set transfer being
+	// staged and published the directory of the files on the clipboard now.
+	// reserve is the free space a stage keeps on the disk.
+	rootDir   string
+	root      string
+	dirs      int
+	offer     *offer
+	windows   map[string]*cliptransfer.Window
+	inbound   *staging
+	published string
+	reserve   int64
+	// cancelled is the transfer last cancelled, and stopped a module that
+	// has stopped: neither stages anything more.
+	cancelled string
+	stopped   bool
+
 	// sizes holds the sizes stat measured for the content at sizesToken, so
 	// a host polling an unchanged clipboard costs no read. Guarded by sizesMu,
 	// apart from mu so a stat never waits behind an upload.
@@ -113,9 +145,36 @@ type Service struct {
 	sizesToken uint64
 }
 
+// Option configures a Service.
+type Option func(*Service)
+
+// WithStagingDir stages the files a host sends under dir rather than a new
+// temporary directory.
+func WithStagingDir(dir string) Option { return func(s *Service) { s.rootDir = dir } }
+
 // NewService builds the clipboard service.
-func NewService(b Backend) *Service {
-	return &Service{b: b, uploads: make(map[string]*upload)}
+func NewService(b Backend, opts ...Option) *Service {
+	s := &Service{
+		b:       b,
+		uploads: make(map[string]*upload),
+		windows: make(map[string]*cliptransfer.Window),
+		reserve: cliptransfer.Reserve,
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// Stop ends every transfer in flight and deletes what it staged. The files on
+// the clipboard stay: a paste may still want them.
+func (s *Service) Stop(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopped = true
+	s.dropOffer()
+	s.dropStaging()
+	return nil
 }
 
 // Capability implements weavemodule.Service.
@@ -128,6 +187,11 @@ func (s *Service) Register(r *weavemodule.Registrar) error {
 	r.HandleDeferred(weavewire.KindClipboardGet, s.handleGet)
 	r.Handle(weavewire.KindClipboardSet, s.handleSet)
 	r.Handle(weavewire.KindClipboardUpload, s.handleUpload)
+	r.HandleDeferred(weavewire.KindClipboardFetch, s.handleFetch)
+	r.Handle(weavewire.KindClipboardStage, s.handleStage)
+	r.Handle(weavewire.KindClipboardPut, s.handlePut)
+	r.Handle(weavewire.KindClipboardCredit, s.handleCredit)
+	r.Handle(weavewire.KindClipboardCancel, s.handleCancel)
 	return nil
 }
 
@@ -149,6 +213,7 @@ func (s *Service) handleStat(ctx context.Context, _ []byte) ([]byte, error) {
 	st.Support = sup.Formats
 	st.SingleRepresentation = sup.SingleRepresentation
 	st.Limitation = sup.Limitation
+	st.Streaming = true
 	return weavewire.EncodePayload(st)
 }
 
@@ -207,6 +272,9 @@ func (s *Service) handleGet(ctx context.Context, payload []byte) ([]byte, func()
 			return nil, nil, fmt.Errorf("%w: decoding get: %w", ErrBadRequest, err)
 		}
 	}
+	if req.Stream {
+		return s.streamingGet(ctx, req)
+	}
 	limit := req.MaxBytes
 	if limit <= 0 || limit > weavewire.MaxClipboardBytes {
 		limit = weavewire.MaxClipboardBytes
@@ -218,12 +286,15 @@ func (s *Service) handleGet(ctx context.Context, payload []byte) ([]byte, func()
 	}
 	resp := weavewire.ClipboardGetResponse{ChangeToken: c.ChangeToken}
 	var total int64
-	for _, it := range c.Items {
+	for i, it := range append(fileItems(c.Files), c.Items...) {
 		if len(req.Formats) > 0 && !slices.Contains(req.Formats, it.Format) {
 			continue // the host's format policy holds even if a backend over-reads
 		}
 		if it.Data != nil {
 			it.Size = int64(len(it.Data))
+		}
+		if i < len(c.Files) && it.Size <= limit && total+it.Size <= weavewire.MaxClipboardBytes {
+			it.Data = readFile(c.Files[i]) // a file by path, in bounds: read it for this host
 		}
 		// Over the per-item cap, over what the whole get may carry, or
 		// not read by the backend: listed, never truncated.
@@ -289,6 +360,8 @@ func (s *Service) handleSet(ctx context.Context, payload []byte) ([]byte, error)
 	if len(req.Items) == 0 {
 		return nil, fmt.Errorf("%w: a set needs at least one item", ErrBadRequest)
 	}
+	// Staged items streamed to disk ahead of the set, and have no ceiling;
+	// the rest came inline or as an upload held in memory, which does.
 	var total int64
 	for _, it := range req.Items {
 		if it.Format == "" {
@@ -297,7 +370,9 @@ func (s *Service) handleSet(ctx context.Context, payload []byte) ([]byte, error)
 		if it.Size < 0 {
 			return nil, fmt.Errorf("%w: %s has a negative size", ErrBadRequest, it.Format)
 		}
-		total += it.Size
+		if it.Stream == "" {
+			total += it.Size
+		}
 	}
 	if total > weavewire.MaxClipboardBytes {
 		return nil, fmt.Errorf("%w: %d bytes is over the %d-byte limit",
@@ -305,12 +380,21 @@ func (s *Service) handleSet(ctx context.Context, payload []byte) ([]byte, error)
 	}
 
 	items := slices.Clone(req.Items)
+	carried := slices.DeleteFunc(slices.Clone(items), func(it weavewire.ClipboardItem) bool {
+		return it.Stream != ""
+	})
 	if req.TransferID == "" {
-		if err := checkInline(items); err != nil {
+		if err := checkInline(carried); err != nil {
 			return nil, err
 		}
-	} else if err := s.attachUpload(req.TransferID, items, total); err != nil {
+	} else if err := s.attachUpload(req.TransferID, carried, total); err != nil {
 		return nil, err
+	}
+	for i, j := 0, 0; i < len(items); i++ {
+		if items[i].Stream == "" {
+			items[i] = carried[j]
+			j++
+		}
 	}
 
 	// Only what the guest holds reaches the backend. A set of nothing it
@@ -330,9 +414,9 @@ func (s *Service) handleSet(ctx context.Context, payload []byte) ([]byte, error)
 		}
 	}
 
-	res, err := s.b.Write(ctx, writable)
+	res, err := s.write(ctx, writable)
 	if err != nil {
-		return nil, fmt.Errorf("weaveclipboard: writing: %w", err)
+		return nil, err
 	}
 	res.Unwritten = nil
 	for _, it := range req.Items {
@@ -459,4 +543,135 @@ func (s *Service) handleUpload(_ context.Context, payload []byte) ([]byte, error
 func (s *Service) forget(id string) {
 	delete(s.uploads, id)
 	s.order = slices.DeleteFunc(s.order, func(o string) bool { return o == id })
+}
+
+// fileItems is files as the items an older host's get carries, sized and not
+// yet read.
+func fileItems(files []File) []weavewire.ClipboardItem {
+	out := make([]weavewire.ClipboardItem, 0, len(files))
+	for _, f := range files {
+		out = append(out, weavewire.ClipboardItem{
+			Format: weavewire.ClipboardFiles, Name: f.Name, Size: f.Size,
+		})
+	}
+	return out
+}
+
+// readFile reads a file offered by path, for a host that does not stream. A
+// file that cannot be read whole at its size reads as nil: it is then listed
+// as omitted, sized and without data.
+func readFile(f File) []byte {
+	data, err := os.ReadFile(f.Path)
+	if err != nil || int64(len(data)) != f.Size {
+		return nil
+	}
+	if data == nil {
+		data = []byte{} // an empty file is content, not an unread one
+	}
+	return data
+}
+
+// write puts a set's writable items on the clipboard. A backend that takes
+// staged files is handed every file by path: a staged item's from where it
+// streamed to, an inline or uploaded one's from where the service writes it.
+// A staged item of another format is read back into memory, since the OS's
+// clipboard holds it there. Once the clipboard holds the files, the files of
+// the copy it held before are deleted.
+func (s *Service) write(
+	ctx context.Context,
+	items []weavewire.ClipboardItem,
+) (weavewire.ClipboardSetResponse, error) {
+	fw, byPath := s.b.(FileWriter)
+	s.mu.Lock()
+	dir, staged, err := s.claimStaged(items)
+	if err == nil && dir == "" && byPath && slices.ContainsFunc(items, isFile) {
+		dir, err = s.newTransferDir()
+	}
+	if err == nil && s.inbound != nil && s.inbound.dir == dir {
+		s.inbound = nil // claimed: no longer a transfer to supersede
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return weavewire.ClipboardSetResponse{}, err
+	}
+
+	var paths []string
+	out := slices.Clone(items)
+	for i := range out {
+		it := &out[i]
+		path, wasStaged := staged[it.Stream]
+		file := it.Format == weavewire.ClipboardFiles
+		switch {
+		case file && byPath && wasStaged:
+			paths = append(paths, path)
+		case file && byPath:
+			p, err := writeStaged(dir, len(paths), it)
+			if err != nil {
+				s.discard(dir)
+				return weavewire.ClipboardSetResponse{}, err
+			}
+			paths = append(paths, p)
+		case wasStaged:
+			// The OS's clipboard holds a representation in memory, and a
+			// backend that takes no paths holds a file there too.
+			data, err := os.ReadFile(path) //nolint:gosec // G304: a staging path of ours
+			if err != nil {
+				s.discard(dir)
+				return weavewire.ClipboardSetResponse{}, fmt.Errorf(
+					"weaveclipboard: reading staged %s: %w", it.Format, err)
+			}
+			it.Data = data
+		}
+		if file && byPath {
+			it.Data = nil
+		}
+	}
+
+	var res weavewire.ClipboardSetResponse
+	if byPath {
+		res, err = fw.WriteFiles(ctx, out, paths)
+	} else {
+		res, err = s.b.Write(ctx, out)
+	}
+	if err != nil {
+		s.discard(dir)
+		return res, fmt.Errorf("weaveclipboard: writing: %w", err)
+	}
+	if dir != "" {
+		s.mu.Lock()
+		old := s.published
+		s.published = dir
+		s.mu.Unlock()
+		if old != "" && old != dir {
+			_ = os.RemoveAll(old)
+		}
+	}
+	return res, nil
+}
+
+// discard deletes a transfer directory that will not be published.
+func (s *Service) discard(dir string) {
+	if dir != "" {
+		_ = os.RemoveAll(dir)
+	}
+}
+
+func isFile(it weavewire.ClipboardItem) bool { return it.Format == weavewire.ClipboardFiles }
+
+// writeStaged writes an inline or uploaded file into its own numbered
+// directory of dir, under its base name.
+func writeStaged(dir string, n int, it *weavewire.ClipboardItem) (string, error) {
+	name, err := fileName(it.Name)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrBadRequest, err)
+	}
+	sub := filepath.Join(dir, "i"+strconv.Itoa(n))
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		return "", fmt.Errorf("staging %s: %w", name, err)
+	}
+	p := filepath.Join(sub, name)
+	if err := os.WriteFile(p, it.Data, 0o600); err != nil {
+		return "", fmt.Errorf("staging %s: %w", name, err)
+	}
+	return p, nil
 }

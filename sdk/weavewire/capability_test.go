@@ -139,8 +139,9 @@ func FuzzAddressOf(f *testing.F) {
 func TestTheOpsOfEachCapability(t *testing.T) {
 	for c, want := range map[weavewire.Capability][]string{
 		weavewire.Clipboard: {
-			"weave.clipboard.get", "weave.clipboard.set",
-			"weave.clipboard.stat", "weave.clipboard.upload",
+			"weave.clipboard.cancel", "weave.clipboard.credit", "weave.clipboard.fetch",
+			"weave.clipboard.get", "weave.clipboard.put", "weave.clipboard.set",
+			"weave.clipboard.stage", "weave.clipboard.stat", "weave.clipboard.upload",
 		},
 		weavewire.Session:  {"weave.session.current", "weave.session.list", "weave.session.lock"},
 		weavewire.Display:  {"weave.display.list", "weave.display.set"},

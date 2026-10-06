@@ -76,6 +76,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/internal/cliptransfer"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/protocol/hvchannel"
 	"github.com/weaveplatform/weaveplatform-agent-modules/sdk/weavewire"
 )
@@ -114,8 +115,12 @@ type Client struct {
 	// that would accumulate for the life of the connection.
 	execs        map[string]*ExecSession
 	execHandlers bool
-	// downloads routes clipboard get streams by transfer id, the same way.
+	// downloads routes clipboard get streams by transfer id, the same way;
+	// fetches routes fetched files' streams, and stages staged items'
+	// acknowledgements, by stream id.
 	downloads       map[string]*download
+	fetches         map[string]*fetch
+	stages          map[string]*cliptransfer.Window
 	downloadHandler bool
 
 	// control carries channel-level frames (the authentication handshake) from
