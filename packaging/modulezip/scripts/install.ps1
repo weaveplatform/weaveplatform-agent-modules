@@ -45,12 +45,33 @@ param(
 Set-StrictMode -Version 3
 $ErrorActionPreference = 'Stop'
 
+# Clear-ReadOnly clears a file's read-only attribute, if it exists.
+function Clear-ReadOnly([string]$Path) {
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $attrs = [System.IO.File]::GetAttributes($Path)
+        $readOnly = [System.IO.FileAttributes]::ReadOnly
+        if ($attrs -band $readOnly) {
+            [System.IO.File]::SetAttributes($Path, $attrs -band -bnot $readOnly)
+        }
+    }
+}
+
 # Install-File copies Source to a sibling of Destination and renames it over
 # Destination, so nothing ever reads a half-written file.
+#
+# A copy keeps the read-only attribute, which every file unpacked from a CD or
+# an ISO carries, and File.Replace refuses a read-only file on either side
+# with "Access to the path is denied". So the staged copy and the file it
+# replaces are both made writable first: the installed files never carry the
+# attribute, and one a previous install left read-only is replaced all the
+# same. The package itself is never touched; it may be on read-only media.
 function Install-File([string]$Source, [string]$Destination) {
     $staged = "$Destination.new"
+    Clear-ReadOnly $staged
     Copy-Item -LiteralPath $Source -Destination $staged -Force
+    Clear-ReadOnly $staged
     if (Test-Path -LiteralPath $Destination) {
+        Clear-ReadOnly $Destination
         [System.IO.File]::Replace($staged, $Destination, [NullString]::Value)
     } else {
         [System.IO.File]::Move($staged, $Destination)

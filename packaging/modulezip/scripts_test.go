@@ -284,3 +284,98 @@ func TestInstallRefusesABrokenPackage(t *testing.T) {
 		})
 	}
 }
+
+// readOnly sets or clears a file's read-only attribute (its write bits
+// elsewhere), and clears it again when the test ends, so the test's
+// directories can be removed.
+func readOnly(t *testing.T, path string, on bool) {
+	t.Helper()
+	mode := os.FileMode(0o644)
+	if on {
+		mode = 0o444
+		t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writable(t *testing.T, path string) bool {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Mode().Perm()&0o200 != 0
+}
+
+// A package copied off a CD or an ISO is read-only, file by file, and so is a
+// module a previous such install left behind: install.ps1 installs and
+// upgrades through both, never touching the package, and leaves nothing
+// read-only behind.
+func TestInstallThroughReadOnlyFiles(t *testing.T) {
+	for _, shell := range shells(t) {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			pkg := unpack(t)
+			root := t.TempDir()
+			moduleDir := filepath.Join(root, "modules", "weave-windows-presence")
+			binary := filepath.Join(pkg, "module", "weave-windows-presence.exe")
+			sources := []string{
+				binary,
+				filepath.Join(pkg, "module", "module.manifest.json"),
+				filepath.Join(pkg, "uninstall.ps1"),
+			}
+			installed := []string{
+				filepath.Join(moduleDir, "weave-windows-presence.exe"),
+				filepath.Join(moduleDir, "module.manifest.json"),
+				filepath.Join(root, "uninstall.d", "weave-windows-presence.ps1"),
+			}
+			for _, p := range sources {
+				readOnly(t, p, true)
+			}
+			if r := ps(t, shell, "ok", filepath.Join(pkg, "install.ps1"), "-InstallDir", root); r.code != 0 {
+				t.Fatalf("install from read-only files exited %d: %s", r.code, r.out)
+			}
+			for _, p := range installed {
+				if !writable(t, p) {
+					t.Errorf("%s was installed read-only", p)
+				}
+			}
+			for _, p := range sources {
+				if writable(t, p) {
+					t.Errorf("the install changed %s in the package", p)
+				}
+			}
+
+			// An upgrade over installed files left read-only, and over a
+			// read-only staged copy an interrupted install left behind.
+			for _, p := range installed {
+				readOnly(t, p, true)
+			}
+			stale := installed[0] + ".new"
+			if err := os.WriteFile(stale, []byte("MZ interrupted"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			readOnly(t, stale, true)
+			readOnly(t, binary, false)
+			if err := os.WriteFile(binary, []byte("MZ the next version"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			readOnly(t, binary, true)
+			if r := ps(t, shell, "ok", filepath.Join(pkg, "install.ps1"), "-InstallDir", root); r.code != 0 {
+				t.Fatalf("upgrade over read-only files exited %d: %s", r.code, r.out)
+			}
+			if b, _ := os.ReadFile(installed[0]); string(b) != "MZ the next version" {
+				t.Errorf("upgrade left %q", b)
+			}
+			for _, p := range installed {
+				if !writable(t, p) {
+					t.Errorf("%s is read-only after the upgrade", p)
+				}
+			}
+			if exists(t, stale) {
+				t.Error("the staged copy survived the upgrade")
+			}
+		})
+	}
+}
