@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.5](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.4...sdk/v0.2.5) (2026-10-06)
+
+
+### Bug Fixes
+
+* **sdk:** end testkit host streams with the caller's context status ([deb894b](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/deb894b17cbce7ae9513a46b6a63128a0db8025d))
+* **sdk:** size every format a clipboard stat lists ([0d5d0f9](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/0d5d0f995c3612d8659e8b80cd9334b14d1fdec4))
+* session module binding race and testkit stream status ([d50eff7](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/d50eff719a9c1cb0b0a691d1990aa791aa523906))
+* Windows bitmap images, sized clipboard stats and read-only module installs ([e6aac85](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/e6aac8551103bb4b43a739379d4a2c8836efaebd))
+
 ## [0.2.4](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.3...sdk/v0.2.4) (2026-10-06)
 
 
