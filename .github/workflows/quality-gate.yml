@@ -18,27 +18,104 @@ name: go | Quality gate
 # agent-core's proto/ at the release named in .github/agent-core-version,
 # neither it nor any module depends on agent-core, and a module built on it
 # runs under that released weave-agent on every OS.
+#
+# A pull request runs only the modules its change needs, which
+# .github/scripts/select-modules.sh decides from the files changed since the
+# merge base: a module's own files select it, a module selects every module
+# whose go.mod replaces it with an in-repo path (the sdk selects them all), a
+# shared input (the workspace, tools, lint and coverage config, the Makefile,
+# the workflows) selects everything, and Markdown selects nothing. A push to
+# main, a manual run and the nightly run select everything, so a vulnerability
+# advisory published overnight fails the gate without a code change. The
+# rules are in CONTRIBUTING.md.
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '41 3 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: quality-gate-${{ github.ref }}
+  # By event too: the nightly run on main must not cancel, or be cancelled
+  # by, the run for a merge.
+  group: quality-gate-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   modules:
-    name: 'Discover modules'
+    name: 'Select modules'
     runs-on: ubuntu-latest
     outputs:
-      modules: ${{ steps.discover.outputs.modules }}
-      units: ${{ steps.discover.outputs.units }}
+      all: ${{ steps.select.outputs.all }}
+      any: ${{ steps.select.outputs.any }}
+      sdk: ${{ steps.select.outputs.sdk }}
+      modules: ${{ steps.select.outputs.modules }}
+      units: ${{ steps.select.outputs.units }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # Full history, so the pull request's merge base is here to diff from.
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.work'
+          cache: false
+
+      # go.work is the list of modules. A go.mod that never joined it would be
+      # silently skipped here, so that is a failure rather than a gap.
+      - name: Every go.mod is in go.work
+        run: |
+          set -euo pipefail
+          mods=$(go work edit -json | jq -r '.Use[].DiskPath | ltrimstr("./")' | sort)
+          found=$(find . -name go.mod -not -path './tools/*' -not -path './.git/*' -printf '%h\n' | sed 's#^\./##' | sort)
+          missing=$(comm -13 <(printf '%s\n' "$mods") <(printf '%s\n' "$found"))
+          if [ -n "$missing" ]; then
+            echo "::error::modules missing from go.work: $missing"
+            exit 1
+          fi
+
+      # A pull request is compared with its merge base, so commits that
+      # reached the base branch after it forked are not counted as its change.
+      # --no-renames lists both sides of a move, so a file moved out of a
+      # module still selects it.
+      - name: Modules this change needs
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+            echo "changed since $base:"
+            git diff --name-only --no-renames "$base" "$HEAD_SHA" | tee "$RUNNER_TEMP/changed"
+            .github/scripts/select-modules.sh < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
+          else
+            .github/scripts/select-modules.sh --all < /dev/null | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  # The selection script's own tests. Any change to it, or to this workflow,
+  # is a full run, so they run exactly when they could have been broken.
+  selection:
+    name: 'Module selection tests'
+    needs: [modules]
+    if: needs.modules.outputs.all == 'true'
+    runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -56,35 +133,17 @@ jobs:
           go-version-file: 'go.work'
           cache: false
 
-      # go.work is the list of modules. A go.mod that never joined it would be
-      # silently skipped here, so that is a failure rather than a gap.
-      - name: Modules from go.work
-        id: discover
-        run: |
-          set -euo pipefail
-          mods=$(go work edit -json | jq -r '.Use[].DiskPath | ltrimstr("./")' | sort)
-          found=$(find . -name go.mod -not -path './tools/*' -not -path './.git/*' -printf '%h\n' | sed 's#^\./##' | sort)
-          missing=$(comm -13 <(printf '%s\n' "$mods") <(printf '%s\n' "$found"))
-          if [ -n "$missing" ]; then
-            echo "::error::modules missing from go.work: $missing"
-            exit 1
-          fi
-          modules=$(printf '%s\n' "$mods" | jq -R . | jq -sc '{include: map(. as $d | {dir: $d, slug: ($d | gsub("/"; "-")),
-            goos: ((($d | capture("^modules/weave-(?<os>linux|macos|windows)-")? | .os) // "")
-              | {linux: "linux", macos: "darwin", windows: "windows", "": ""}[.])})}')
-          units=$(printf '%s\n' "$mods" | jq -R . | jq -sc '{include: [.[] as $d
-            | (($d | capture("^modules/weave-(?<os>linux|macos|windows)-")? | .os) // null) as $only
-            | {linux: "ubuntu-latest", macos: "macos-latest", windows: "windows-latest"} | to_entries[]
-            | select($only == null or .key == $only)
-            | {dir: $d, slug: ($d | gsub("/"; "-")), os: .key, runner: .value}]}')
-          echo "modules=$modules" >> "$GITHUB_OUTPUT"
-          echo "units=$units" >> "$GITHUB_OUTPUT"
-          echo "modules: $modules"
-          echo "units: $units"
+      - name: shellcheck
+        run: shellcheck .github/scripts/*.sh
+
+      - name: Tests
+        run: .github/scripts/select-modules_test.sh
 
   unit:
     name: 'Test ${{ matrix.dir }} (${{ matrix.os }})'
     needs: [modules]
+    # An empty matrix is an error, so no selected module means no job.
+    if: needs.modules.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.modules.outputs.units) }}
@@ -150,6 +209,7 @@ jobs:
   lint:
     name: 'Lint ${{ matrix.dir }} (${{ matrix.os }})'
     needs: [modules]
+    if: needs.modules.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.modules.outputs.units) }}
@@ -192,6 +252,7 @@ jobs:
   vuln:
     name: 'govulncheck ${{ matrix.dir }}'
     needs: [modules]
+    if: needs.modules.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.modules.outputs.modules) }}
@@ -238,6 +299,7 @@ jobs:
   build:
     name: 'Cross-compile ${{ matrix.dir }}'
     needs: [modules]
+    if: needs.modules.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.modules.outputs.modules) }}
@@ -282,6 +344,8 @@ jobs:
 
   tidy:
     name: 'go.mod and go.work are tidy'
+    needs: [modules]
+    if: needs.modules.outputs.any == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
@@ -313,6 +377,9 @@ jobs:
   coverage:
     name: 'Coverage gate ${{ matrix.dir }} (≥95% total, ≥90% per package)'
     needs: [modules, unit]
+    # The modules that ran, each over every OS profile it has: selection is
+    # by module, never by module and OS, so each gate sees all its profiles.
+    if: needs.modules.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.modules.outputs.modules) }}
@@ -356,6 +423,8 @@ jobs:
 
   sdk-gen:
     name: 'sdk/gen matches agent-core proto/'
+    needs: [modules]
+    if: needs.modules.outputs.sdk == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
@@ -403,6 +472,8 @@ jobs:
 
   boundary:
     name: 'sdk and modules never depend on agent-core'
+    needs: [modules]
+    if: needs.modules.outputs.any == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
@@ -454,6 +525,8 @@ jobs:
 
   compat:
     name: 'sdk module under released weave-agent (${{ matrix.os }})'
+    needs: [modules]
+    if: needs.modules.outputs.sdk == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -518,17 +591,27 @@ jobs:
           CGO_ENABLED: '0'
         run: go test -count=1 -run TestUnderReleasedAgent -v ./internal/compatfixture
 
+  # The single required check. It always runs, and passes only when the
+  # selection succeeded and every other job either passed or was skipped
+  # because the change did not select it. A job skipped because something it
+  # needs failed is not a pass: that failure is in the results too.
   gate:
     name: 'Quality gate'
     if: always()
-    needs: [modules, unit, lint, vuln, build, tidy, coverage, sdk-gen, boundary, compat]
+    needs: [modules, selection, unit, lint, vuln, build, tidy, coverage, sdk-gen, boundary, compat]
     runs-on: ubuntu-latest
     steps:
-      - name: Every gate job passed
+      - name: Every selected gate job passed
         env:
+          SELECT: ${{ needs.modules.result }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
+          echo "selection: $SELECT"
           echo "results: $RESULTS"
+          [ "$SELECT" = success ] || { echo "module selection did not succeed"; exit 1; }
           for r in $RESULTS; do
-            [ "$r" = success ] || { echo "a gate job did not succeed"; exit 1; }
+            case $r in
+              success | skipped) ;;
+              *) echo "a gate job ended $r"; exit 1 ;;
+            esac
           done
