@@ -531,9 +531,12 @@ func (d *disk) WriteFiles(
 		d.paths = nil
 	}
 	d.fmu.Unlock()
-	res, err := d.mem.Write(ctx, slices.DeleteFunc(slices.Clone(items), func(it weavewire.ClipboardItem) bool {
-		return it.Format == weavewire.ClipboardFiles
-	}))
+	res, err := d.mem.Write(
+		ctx,
+		slices.DeleteFunc(slices.Clone(items), func(it weavewire.ClipboardItem) bool {
+			return it.Format == weavewire.ClipboardFiles
+		}),
+	)
 	if err == nil && len(paths) > 0 {
 		res.Written = append(res.Written, weavewire.ClipboardFiles)
 	}

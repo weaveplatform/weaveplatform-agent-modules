@@ -139,7 +139,12 @@ func checkLargeFiles(t testing.TB, b weaveclipboard.Backend, size int64) {
 	}, weaveclient.TransferOptions{})
 	if err != nil || len(got.Items) != 1 || !got.Items[0].Deferred || got.Items[0].Size != size ||
 		got.Items[0].Name != "large.bin" {
-		t.Fatalf("reading back: %v; items %v, want large.bin deferred at %d bytes", err, describe(got.Items), size)
+		t.Fatalf(
+			"reading back: %v; items %v, want large.bin deferred at %d bytes",
+			err,
+			describe(got.Items),
+			size,
+		)
 	}
 	f, err := client.ClipboardFetch(
 		ctx,
@@ -163,7 +168,10 @@ func checkLargeFiles(t testing.TB, b weaveclipboard.Backend, size int64) {
 func describe(items []weavewire.ClipboardItem) []string {
 	out := make([]string, 0, len(items))
 	for _, it := range items {
-		out = append(out, fmt.Sprintf("%s %q %d bytes deferred=%v", it.Format, it.Name, it.Size, it.Deferred))
+		out = append(
+			out,
+			fmt.Sprintf("%s %q %d bytes deferred=%v", it.Format, it.Name, it.Size, it.Deferred),
+		)
 	}
 	return out
 }

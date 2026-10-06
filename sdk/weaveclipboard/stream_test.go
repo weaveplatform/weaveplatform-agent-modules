@@ -835,7 +835,7 @@ func TestStagingFailures(t *testing.T) {
 	}
 
 	// Without a staging directory of its own, it makes a temporary one.
-	t.Setenv("TMPDIR", t.TempDir())
+	setTemp(t, t.TempDir())
 	b := &fileClipboard{}
 	h = weavemoduletest.Start(t, weaveclipboard.NewService(b))
 	var res weavewire.ClipboardSetResponse
@@ -846,10 +846,10 @@ func TestStagingFailures(t *testing.T) {
 		}},
 		&res,
 	)
-	if p := b.lastPaths(); len(p) != 1 || !strings.HasPrefix(p[0], os.Getenv("TMPDIR")) {
+	if p := b.lastPaths(); len(p) != 1 || !strings.HasPrefix(p[0], os.TempDir()) {
 		t.Errorf("staged at %v", p)
 	}
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
+	setTemp(t, filepath.Join(t.TempDir(), "absent"))
 	h = weavemoduletest.Start(t, weaveclipboard.NewService(b))
 	if res := h.Call(weavewire.KindClipboardStage, weavewire.ClipboardStageRequest{
 		TransferID: "t", StreamID: "s", Format: weavewire.ClipboardPNG,
@@ -874,5 +874,13 @@ func TestStagingFailures(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(root); len(left) != 0 {
 		t.Errorf("left %v", left)
+	}
+}
+
+// setTemp points the temporary directory at dir, on every OS.
+func setTemp(t *testing.T, dir string) {
+	t.Helper()
+	for _, v := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(v, dir)
 	}
 }

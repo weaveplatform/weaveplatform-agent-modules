@@ -321,19 +321,19 @@ func TestClipboardFetchAgainstABrokenGuest(t *testing.T) {
 	ctx := timeoutCtx(t)
 	answer := func(g *rawGuest, size int64, then func(g *rawGuest, id string)) {
 		go func() {
-			env := g.read()
+			env := quietRead(g)
 			var cmd weavewire.Command
 			_ = json.Unmarshal(env.Data, &cmd)
 			var req weavewire.ClipboardFetchRequest
 			_ = json.Unmarshal(cmd.Payload, &req)
 			p, _ := json.Marshal(weavewire.ClipboardFetchResponse{Size: size})
-			g.reply(env, weavewire.Result{Payload: p})
+			quietReply(g, env, weavewire.Result{Payload: p})
 			then(g, req.StreamID)
 		}()
 	}
 	chunk := func(g *rawGuest, c weavewire.Chunk) {
 		data, _ := json.Marshal(c)
-		g.write(
+		quietWrite(g,
 			hvchannel.Envelope{
 				Module: "weave.clipboard",
 				Kind:   weavewire.KindClipboardDownload,
@@ -384,7 +384,7 @@ func TestClipboardFetchAgainstABrokenGuest(t *testing.T) {
 
 	g, client = newRaw(t)
 	answer(g, 6, func(g *rawGuest, _ string) {
-		if env := g.read(); env.Kind != weavewire.KindClipboardCancel {
+		if env := quietRead(g); env.Kind != weavewire.KindClipboardCancel {
 			t.Errorf("after a size mismatch the host sent %s", env.Kind)
 		}
 	})
@@ -495,18 +495,18 @@ func TestClipboardFetchAgainstABrokenGuest(t *testing.T) {
 func TestClipboardSendAgainstABrokenGuest(t *testing.T) {
 	ctx := timeoutCtx(t)
 	stageReply := func(g *rawGuest, st weavewire.ClipboardStageResponse) string {
-		env := g.read()
+		env := quietRead(g)
 		var cmd weavewire.Command
 		_ = json.Unmarshal(env.Data, &cmd)
 		var req weavewire.ClipboardStageRequest
 		_ = json.Unmarshal(cmd.Payload, &req)
 		p, _ := json.Marshal(st)
-		g.reply(env, weavewire.Result{Payload: p})
+		quietReply(g, env, weavewire.Result{Payload: p})
 		return req.StreamID
 	}
 	staged := func(g *rawGuest, ev weavewire.ClipboardStaged) {
 		data, _ := json.Marshal(ev)
-		g.write(
+		quietWrite(g,
 			hvchannel.Envelope{
 				Module: "weave.clipboard",
 				Kind:   weavewire.KindClipboardStaged,
@@ -523,9 +523,9 @@ func TestClipboardSendAgainstABrokenGuest(t *testing.T) {
 	g, client := newRaw(t)
 	go func(g *rawGuest) {
 		id := stageReply(g, weavewire.ClipboardStageResponse{})
-		g.read() // the first chunk
+		quietRead(g) // the first chunk
 		staged(g, weavewire.ClipboardStaged{StreamID: "someone else", Done: true})
-		g.write(
+		quietWrite(g,
 			hvchannel.Envelope{
 				Module: "weave.clipboard",
 				Kind:   weavewire.KindClipboardStaged,
@@ -576,7 +576,7 @@ func TestClipboardSendAgainstABrokenGuest(t *testing.T) {
 	// A guest that refuses the stage call, or the set, fails the send.
 	g, client = newRaw(t)
 	go func(g *rawGuest) {
-		g.reply(g.read(), weavewire.Result{Err: "no"})
+		quietReply(g, quietRead(g), weavewire.Result{Err: "no"})
 		drain(g)
 	}(g)
 	if _, err := client.ClipboardSend(ctx, item, opts); err == nil {
@@ -584,7 +584,7 @@ func TestClipboardSendAgainstABrokenGuest(t *testing.T) {
 	}
 	g, client = newRaw(t)
 	go func(g *rawGuest) {
-		g.reply(g.read(), weavewire.Result{Err: "no"})
+		quietReply(g, quietRead(g), weavewire.Result{Err: "no"})
 		drain(g)
 	}(g)
 	if _, err := client.ClipboardSend(
@@ -667,3 +667,33 @@ func TestStreamingGetChecksTheDigest(t *testing.T) {
 // drain reads and discards what the host sends from here on — its credits —
 // so a synchronous pipe never blocks it.
 func drain(g *rawGuest) { _, _ = io.Copy(io.Discard, g.r) }
+
+// quietWrite writes env as the guest without reporting a failure: a test's
+// guest goroutine may still be writing when the host has given up and the
+// test has ended and closed the pipe.
+func quietWrite(g *rawGuest, env hvchannel.Envelope) {
+	g.wmu.Lock()
+	defer g.wmu.Unlock()
+	if hvchannel.WriteEnvelope(g.w, env) == nil {
+		_ = g.w.Flush()
+	}
+}
+
+// quietReply answers cmd as rawGuest.reply does, without reporting a failure.
+func quietReply(g *rawGuest, cmd hvchannel.Envelope, res weavewire.Result) {
+	var in weavewire.Command
+	_ = json.Unmarshal(cmd.Data, &in)
+	res.ID = in.ID
+	data, _ := json.Marshal(res)
+	quietWrite(
+		g,
+		hvchannel.Envelope{Module: cmd.Module, Kind: weavewire.ResultKind(cmd.Kind), Data: data},
+	)
+}
+
+// quietRead reads the host's next envelope, or an empty one once the pipe is
+// closed.
+func quietRead(g *rawGuest) hvchannel.Envelope {
+	env, _ := hvchannel.ReadEnvelope(g.r)
+	return env
+}
