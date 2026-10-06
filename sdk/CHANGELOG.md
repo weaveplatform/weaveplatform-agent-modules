@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.4](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.3...sdk/v0.2.4) (2026-10-06)
+
+
+### Bug Fixes
+
+* **sdk:** let a module serve its pipe as a non-admin user ([f398e3f](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/f398e3facb680c534bd0b934f5d1eaa77cb76c2f))
+* **sdk:** let a module serve its pipe as a non-admin user ([b1a4c10](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/b1a4c10a6c520a75f99c4e385957c01c437e6cff))
+
 ## [0.2.3](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.2...sdk/v0.2.3) (2026-10-05)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-windows-display/v0.2.1...modules/weave-windows-display/v0.2.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **sdk:** let a module serve its pipe as a non-admin user ([f398e3f](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/f398e3facb680c534bd0b934f5d1eaa77cb76c2f))
+* **weave-windows-display:** start in the console user's session ([f8c64be](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/f8c64be1ab3dc1590c188881f257f16e1f89828c))
+
 ## [0.2.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-windows-display/v0.2.0...modules/weave-windows-display/v0.2.1) (2026-10-05)
 
 
