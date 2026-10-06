@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.5...sdk/v0.2.6) (2026-10-06)
+
+
+### Features
+
+* stream clipboard copies of any size between host and guest ([#27](https://github.com/weaveplatform/weaveplatform-agent-modules/issues/27)) ([0c9536b](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/0c9536b6738897cf4d7094397411c73f158affe1))
+
 ## [0.2.5](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/sdk/v0.2.4...sdk/v0.2.5) (2026-10-06)
 
 
