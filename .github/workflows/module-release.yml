@@ -22,8 +22,8 @@ name: module-release
 #      size, taken from the signed binaries, and push the binaries and the
 #      sidecar to GHCR with ORAS as
 #      ghcr.io/<owner>/weaveplatform-modules/<id>:<version>;
-#   6. attach the same files, and any .pkg or .zip, to the module's GitHub
-#      release;
+#   6. build .deb packages for Linux and attach all installers, binaries,
+#      manifests and keyless-signed checksums to the module's GitHub release;
 #   7. ask weaveplatform-release-channels for a promotion PR (module-published).
 #
 # The jobs are split by what each must hold. Only the signing jobs see a
@@ -50,7 +50,7 @@ on:
       - 'modules/weave-*/v*'
   workflow_dispatch:
     inputs:
-      # Re-publish an existing tag after a pipeline fix without cutting a release.
+      # Publish an existing tag only when its immutable artifacts do not exist.
       tag:
         description: Existing tag to publish, e.g. modules/weave-linux-presence/v0.2.0
         required: false
@@ -658,6 +658,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
     env:
       DIR: ${{ needs.module.outputs.dir }}
       ID: ${{ needs.module.outputs.id }}
@@ -744,6 +745,57 @@ jobs:
             module.manifest.json > "$RUNNER_TEMP/dist/module.manifest.json"
           cat "$RUNNER_TEMP/dist/module.manifest.json"
 
+      - name: Set up Go for Linux packages
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packaging/moduledeb/go.mod
+          cache: false
+
+      # Use the stamped manifest, so the package carries the same version
+      # and binary digests as the release and channel artifacts.
+      - name: Build Linux Debian packages
+        env:
+          GOWORK: 'off'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bins=("$RUNNER_TEMP/dist/${ID}"-linux-*)
+          mkdir -p "$RUNNER_TEMP/pkg"
+          if [ "${#bins[@]}" -gt 0 ]; then
+            (cd packaging/moduledeb && go build -o "$RUNNER_TEMP/moduledeb" .)
+            for f in "${bins[@]}"; do
+              arch="${f##*-linux-}"
+              pkg=$("$RUNNER_TEMP/moduledeb" -binary "$f" \
+                -manifest "$RUNNER_TEMP/dist/module.manifest.json" -arch "$arch" -out "$RUNNER_TEMP/pkg")
+              [ "$(dpkg-deb -f "$pkg" Package)" = "$ID" ]
+              [ "$(dpkg-deb -f "$pkg" Version)" = "$VERSION" ]
+              [ "$(dpkg-deb -f "$pkg" Architecture)" = "$arch" ]
+              dpkg-deb --contents "$pkg"
+            done
+          fi
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      # Installer hashes cover the final signed/notarised bytes. Keep the
+      # checksums outside both input directories until hashing is complete.
+      - name: Sign release checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sums="$RUNNER_TEMP/module-checksums.txt"
+          : > "$sums"
+          for dir in dist pkg; do
+            for f in "$RUNNER_TEMP/$dir/"*; do
+              printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")" >> "$sums"
+            done
+          done
+          sort -k2 "$sums" > "$RUNNER_TEMP/pkg/checksums.txt"
+          cosign sign-blob --yes --bundle "$RUNNER_TEMP/pkg/checksums.txt.sigstore.json" \
+            "$RUNNER_TEMP/pkg/checksums.txt"
+
       - name: Set up ORAS
         uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
 
@@ -752,12 +804,28 @@ jobs:
       # the package grants this repository Write (Package settings → Manage
       # Actions access). A PAT with write:packages is org-scoped and is
       # preferred when one is set.
+      - name: Refuse replacing released artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets > "$RUNNER_TEMP/existing-assets.json"; then
+            test "$(jq '.assets | length' "$RUNNER_TEMP/existing-assets.json")" -eq 0 || {
+              echo '::error::This version already has assets; publish a new module version.'
+              exit 1
+            }
+          fi
+
       - name: Publish to GHCR
         env:
           REGISTRY_TOKEN: ${{ secrets.RELEASE_PLEASE_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if oras resolve "ghcr.io/${GITHUB_REPOSITORY_OWNER}/weaveplatform-modules/${ID}:${VERSION}" >/dev/null 2>&1; then
+            echo '::error::This module tag is already published; publish a new version.'
+            exit 1
+          fi
           cd "$RUNNER_TEMP/dist"
           oras push "ghcr.io/${GITHUB_REPOSITORY_OWNER}/weaveplatform-modules/${ID}:${VERSION}" \
             --artifact-type application/vnd.weave.module \
@@ -776,7 +844,7 @@ jobs:
             echo "::notice::no release for $TAG; creating one for the artifacts"
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --generate-notes
           fi
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/pkg/*
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/pkg/*
 
       # The dispatch needs write access to the channels repository, which this
       # repository's GITHUB_TOKEN never has. The org release-please App mints a
