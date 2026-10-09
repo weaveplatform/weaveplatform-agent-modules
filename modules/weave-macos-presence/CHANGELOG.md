@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-macos-presence/v0.2.1...modules/weave-macos-presence/v0.2.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* retain core degradation in SDK registry snapshots ([#37](https://github.com/weaveplatform/weaveplatform-agent-modules/issues/37)) ([d09af72](https://github.com/weaveplatform/weaveplatform-agent-modules/commit/d09af7295293fbfb16af4ea3bc71d2f0a7fe989f))
+
 ## [0.2.1](https://github.com/weaveplatform/weaveplatform-agent-modules/compare/modules/weave-macos-presence/v0.2.0...modules/weave-macos-presence/v0.2.1) (2026-10-05)
 
 
