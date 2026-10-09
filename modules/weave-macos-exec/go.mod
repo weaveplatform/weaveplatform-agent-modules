@@ -1,6 +1,6 @@
 module github.com/weaveplatform/weaveplatform-agent-modules/modules/weave-macos-exec
 
-go 1.27
+go 1.27.2
 
 require github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.7
 

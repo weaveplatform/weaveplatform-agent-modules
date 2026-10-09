@@ -1,6 +1,6 @@
 module github.com/weaveplatform/weaveplatform-agent-modules/sdk
 
-go 1.27
+go 1.27.2
 
 require (
 	github.com/Microsoft/go-winio v0.6.3

@@ -31,7 +31,15 @@ const (
 type ModulesSnapshot struct {
 	Revision uint64 `json:"revision"`
 	// Modules is sorted by ID and always an array on the wire.
-	Modules []ModuleInfo `json:"modules"`
+	Modules []ModuleInfo   `json:"modules"`
+	Core    *CoreCondition `json:"core,omitempty"`
+}
+
+// CoreCondition reports degraded core features and their cause.
+type CoreCondition struct {
+	Degraded    bool     `json:"degraded"`
+	Reason      string   `json:"reason"`
+	Unavailable []string `json:"unavailable"`
 }
 
 // ModuleInfo is one installed module as a host sees it.

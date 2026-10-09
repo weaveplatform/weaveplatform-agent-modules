@@ -1,6 +1,6 @@
 module github.com/weaveplatform/weaveplatform-agent-modules/modules/weave-linux-clipboard
 
-go 1.27
+go 1.27.2
 
 require (
 	github.com/jezek/xgb v1.3.1

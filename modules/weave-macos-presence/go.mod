@@ -1,6 +1,6 @@
 module github.com/weaveplatform/weaveplatform-agent-modules/modules/weave-macos-presence
 
-go 1.27
+go 1.27.2
 
 require (
 	github.com/deploymenttheory/go-bindings-macosplatform v0.20.1
