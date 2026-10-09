@@ -1,6 +1,6 @@
 module github.com/weaveplatform/weaveplatform-agent-modules/modules/weave-macos-session
 
-go 1.27
+go 1.27.2
 
 require (
 	github.com/deploymenttheory/go-bindings-macosplatform v0.20.1
@@ -10,7 +10,7 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect

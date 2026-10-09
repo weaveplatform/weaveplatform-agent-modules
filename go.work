@@ -1,7 +1,7 @@
 // The workspace is committed so a checkout builds every module against the
 // local sdk/ without a released sdk. CI also builds every module with
 // GOWORK=off, so a dependency missing from a module's own go.mod still fails.
-go 1.27
+go 1.27.2
 
 use (
 	./modules/weave-linux-clipboard

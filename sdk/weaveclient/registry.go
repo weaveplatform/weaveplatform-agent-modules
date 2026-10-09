@@ -462,5 +462,10 @@ func (c *Client) answer(id string, r pendingReply) bool {
 
 func cloneSnapshot(s ModulesSnapshot) ModulesSnapshot {
 	s.Modules = slices.Clone(s.Modules)
+	if s.Core != nil {
+		core := *s.Core
+		core.Unavailable = slices.Clone(core.Unavailable)
+		s.Core = &core
+	}
 	return s
 }
