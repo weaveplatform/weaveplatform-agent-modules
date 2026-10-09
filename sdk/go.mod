@@ -3,7 +3,7 @@ module github.com/weaveplatform/weaveplatform-agent-modules/sdk
 go 1.27
 
 require (
-	github.com/Microsoft/go-winio v0.6.2
+	github.com/Microsoft/go-winio v0.6.3
 	github.com/creack/pty v1.1.24
 	github.com/deploymenttheory/go-bindings-win32 v0.5.0
 	golang.org/x/sys v0.48.0
@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
 )
