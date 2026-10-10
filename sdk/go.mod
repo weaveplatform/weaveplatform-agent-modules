@@ -6,7 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.3
 	github.com/creack/pty v1.1.24
 	github.com/deploymenttheory/go-bindings-win32 v0.5.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 )
