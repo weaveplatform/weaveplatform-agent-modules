@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.7
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 )
 
 require (
