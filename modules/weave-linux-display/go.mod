@@ -5,7 +5,7 @@ go 1.27.2
 require github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.8
 
 require (
-	github.com/Microsoft/go-winio v0.6.3 // indirect
+	github.com/Microsoft/go-winio v0.6.4 // indirect
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
