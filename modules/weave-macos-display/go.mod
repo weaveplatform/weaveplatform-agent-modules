@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/deploymenttheory/go-bindings-macosplatform v0.20.1
-	github.com/ebitengine/purego v0.11.2
+	github.com/ebitengine/purego v0.11.3
 	github.com/weaveplatform/weaveplatform-agent-modules/sdk v0.2.8
 )
 
